@@ -216,11 +216,13 @@
     cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
     const hsv = new cv.Mat();
     cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
-    // H 40..135 spans green→blue (OpenCV hue is 0..180).
-    const low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [40, 70, 45, 0]);
-    const high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [135, 255, 255, 0]);
+    // H 40..135 spans green→blue (OpenCV hue is 0..180). These hues never
+    // appear in brick/skin/paper, so a moderate saturation bar safely isolates
+    // the cube's green & blue stickers — reliable anchors for the face.
+    const gbLow = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [40, 70, 45, 0]);
+    const gbHigh = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [135, 255, 255, 0]);
     const mask = new cv.Mat();
-    cv.inRange(hsv, low, high, mask);
+    cv.inRange(hsv, gbLow, gbHigh, mask);
     cv.morphologyEx(mask, mask, cv.MORPH_OPEN,
       cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2)));
 
@@ -241,7 +243,7 @@
       }
       cnt.delete();
     }
-    rgb.delete(); hsv.delete(); low.delete(); high.delete();
+    rgb.delete(); hsv.delete(); gbLow.delete(); gbHigh.delete();
     mask.delete(); cnts.delete(); hier.delete();
     return anchors;
   }
@@ -349,8 +351,8 @@
       const card = document.createElement("div");
       card.className = "face-card";
       const title = f.detected
-        ? `Face ${i + 1} — ${f.stickerCount ?? ""} stickers found`
-        : `Face ${i + 1} (center crop — low confidence)`;
+        ? `Detected face — located via ${f.stickerCount ?? 0} green/blue anchor(s)`
+        : `Face (center crop — no green/blue found, low confidence)`;
       const grid = document.createElement("div");
       grid.className = "grid3";
       f.cells.forEach((c) => {
