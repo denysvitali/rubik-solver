@@ -94,29 +94,66 @@
     return { cells, detected };
   }
 
-  // Detect ALL vivid, solid, square stickers (any hue). Robust on clean cubes
-  // where most of the 9 stickers are clearly bounded by black borders.
+  // Detect cube stickers as bright CELLS bounded by the black grid. Uses
+  // adaptive thresholding (local contrast) so it keys on the black borders, not
+  // sticker color — this catches white stickers and glare-blown ones that a
+  // color mask misses, and a multi-scale sweep handles perspective size change.
+  // Each sticker carries its true quad corners + edge unit-vectors (from
+  // approxPolyDP, NOT minAreaRect — the bounding box hides per-face shear).
   function findStickerSquares(cv, mat, imgArea) {
-    const rgb = new cv.Mat(); cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
-    const hsv = new cv.Mat(); cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
-    const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 90, 60, 0]);
-    const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 0]);
-    const mask = new cv.Mat(); cv.inRange(hsv, lo, hi, mask);
-    const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-    cv.morphologyEx(mask, mask, cv.MORPH_OPEN, k);
-    cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, k);
-    const cnts = new cv.MatVector(); const hier = new cv.Mat();
-    cv.findContours(mask, cnts, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-    const st = [];
-    for (let i = 0; i < cnts.size(); i++) {
-      const c = cnts.get(i); const area = cv.contourArea(c); const r = cv.boundingRect(c);
-      const ar = r.width / r.height, fill = area / (r.width * r.height);
-      if (area > imgArea * 0.0008 && area < imgArea * 0.04 && ar > 0.6 && ar < 1.7 && fill > 0.62) {
-        st.push({ cx: r.x + r.width / 2, cy: r.y + r.height / 2, side: (r.width + r.height) / 2, rect: r });
+    const gray = new cv.Mat(); cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
+    const k3 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    const raw = [];
+
+    const harvest = (bin) => {
+      const cnts = new cv.MatVector(); const hier = new cv.Mat();
+      cv.findContours(bin, cnts, hier, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+      for (let i = 0; i < cnts.size(); i++) {
+        const c = cnts.get(i); const area = cv.contourArea(c);
+        if (area < imgArea * 0.0005 || area > imgArea * 0.03) { c.delete(); continue; }
+        const peri = cv.arcLength(c, true);
+        const ap = new cv.Mat(); cv.approxPolyDP(c, ap, 0.06 * peri, true);
+        const ok4 = ap.rows === 4 && cv.isContourConvex(ap);
+        const rr = cv.minAreaRect(c); const w = rr.size.width, h = rr.size.height;
+        const fill = area / Math.max(1, w * h), aspect = Math.max(w, h) / Math.max(1, Math.min(w, h));
+        if (ok4 && fill > 0.6 && aspect < 2.2) {
+          const P = []; for (let j = 0; j < 4; j++) P.push({ x: ap.data32S[j * 2], y: ap.data32S[j * 2 + 1] });
+          const cx = (P[0].x + P[1].x + P[2].x + P[3].x) / 4, cy = (P[0].y + P[1].y + P[2].y + P[3].y) / 4;
+          const r = cv.boundingRect(c);
+          const nrm = (v) => { const m = Math.hypot(v.x, v.y) || 1; return { x: v.x / m, y: v.y / m }; };
+          raw.push({
+            cx, cy, side: (w + h) / 2, rect: r, corners: P,
+            e1: nrm({ x: P[1].x - P[0].x, y: P[1].y - P[0].y }),
+            e2: nrm({ x: P[2].x - P[1].x, y: P[2].y - P[1].y }),
+          });
+        }
+        ap.delete(); c.delete();
       }
-      c.delete();
+      cnts.delete(); hier.delete();
+    };
+
+    for (const bs of [41, 61, 81]) {              // multi-scale black-grid threshold
+      const th = new cv.Mat();
+      cv.adaptiveThreshold(gray, th, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, bs, 9);
+      cv.morphologyEx(th, th, cv.MORPH_OPEN, k3);
+      harvest(th); th.delete();
     }
-    rgb.delete(); hsv.delete(); lo.delete(); hi.delete(); mask.delete(); k.delete(); cnts.delete(); hier.delete();
+    { // also vivid color blobs — recovers saturated stickers the grid threshold merges
+      const rgb = new cv.Mat(); cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
+      const hsv = new cv.Mat(); cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+      const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 90, 60, 0]);
+      const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 0]);
+      const m = new cv.Mat(); cv.inRange(hsv, lo, hi, m); cv.morphologyEx(m, m, cv.MORPH_OPEN, k3);
+      harvest(m);
+      rgb.delete(); hsv.delete(); lo.delete(); hi.delete(); m.delete();
+    }
+
+    // dedup overlapping detections (keep larger)
+    raw.sort((a, b) => b.side - a.side);
+    const st = [];
+    for (const q of raw) if (!st.some((d) => Math.hypot(d.cx - q.cx, d.cy - q.cy) < d.side * 0.5)) st.push(q);
+    gray.delete(); k3.delete();
     return st;
   }
 
@@ -337,45 +374,46 @@
     return { corners, colCenters, rowCenters, ax1x, ax1y, ax2x, ax2y, mx, my };
   }
 
-  // Split stickers from two faces that might be merged in one cluster.
-  // Uses orientation: stickers from the same face have similar nearest-neighbor
-  // directions. Returns sub-clusters, each hopefully from one face.
+  // Split a cluster that merges two adjacent faces. Two visible faces of an
+  // angled cube sit side-by-side along the shared (seam) edge; in projection
+  // their lattices are nearly parallel but spatially offset along the axis that
+  // crosses the seam. So: take the dominant sticker-edge direction, project all
+  // sticker centers onto the perpendicular (seam-crossing) axis, and 1D-2-means
+  // that projection. The gap at the seam separates the faces.
   function splitByOrientation(stickers) {
     const n = stickers.length;
-    if (n < 6) return [stickers]; // too few to split
+    if (n < 6) return [stickers];
 
-    // For each sticker, find its nearest neighbor and compute the direction
-    const dirs = [];
-    for (let i = 0; i < n; i++) {
-      let bestD = Infinity, bestJ = -1;
-      for (let j = 0; j < n; j++) {
-        if (i === j) continue;
-        const d = Math.hypot(stickers[i].cx - stickers[j].cx, stickers[i].cy - stickers[j].cy);
-        if (d < bestD) { bestD = d; bestJ = j; }
-      }
-      if (bestJ < 0) { dirs.push(0); continue; }
-      const dx = stickers[bestJ].cx - stickers[i].cx;
-      const dy = stickers[bestJ].cy - stickers[i].cy;
-      let a = Math.atan2(dy, dx) * 180 / Math.PI;
-      if (a < 0) a += 180; // normalize to [0, 180)
-      dirs.push(a);
-    }
+    // dominant edge direction across the cluster (true corners → e1)
+    const angs = stickers.map((s) => {
+      let a = Math.atan2((s.e1 ? s.e1.y : 0), (s.e1 ? s.e1.x : 1)) * 180 / Math.PI;
+      return ((a % 180) + 180) % 180;
+    }).sort((a, b) => a - b);
+    const th = (angs[n >> 1] || 0) * Math.PI / 180;
+    // seam-crossing axis = perpendicular to the dominant edge
+    const px = -Math.sin(th), py = Math.cos(th);
+    const proj = stickers.map((s) => s.cx * px + s.cy * py);
 
-    // Cluster directions into 2 groups. Simple: find the dominant direction,
-    // then split by whether a sticker's direction is close or ~90° away.
-    // Use the median direction as reference.
-    const sorted = [...dirs].sort((a, b) => a - b);
-    const median = sorted[n >> 1];
-    const groupA = [], groupB = [];
-    for (let i = 0; i < n; i++) {
-      const diff = Math.abs(dirs[i] - median);
-      const angDiff = Math.min(diff, 180 - diff);
-      if (angDiff < 45) groupA.push(stickers[i]);
-      else groupB.push(stickers[i]);
+    // 1D 2-means on the projection
+    let c0 = Math.min(...proj), c1 = Math.max(...proj);
+    if (c1 - c0 < 1e-3) return [stickers];
+    let assign = proj.map(() => 0);
+    for (let it = 0; it < 25; it++) {
+      assign = proj.map((p) => (Math.abs(p - c0) <= Math.abs(p - c1) ? 0 : 1));
+      const g0 = proj.filter((_, i) => assign[i] === 0), g1 = proj.filter((_, i) => assign[i] === 1);
+      const n0 = g0.length ? g0.reduce((a, b) => a + b) / g0.length : c0;
+      const n1 = g1.length ? g1.reduce((a, b) => a + b) / g1.length : c1;
+      if (Math.abs(n0 - c0) < 0.01 && Math.abs(n1 - c1) < 0.01) { c0 = n0; c1 = n1; break; }
+      c0 = n0; c1 = n1;
     }
-    // If one group is too small, don't split
-    if (groupA.length < 4 || groupB.length < 4) return [stickers];
-    return [groupA, groupB];
+    const A = stickers.filter((_, i) => assign[i] === 0);
+    const B = stickers.filter((_, i) => assign[i] === 1);
+    if (A.length < 4 || B.length < 4) return [stickers];
+    // only accept the split if the two groups are well-separated (a real seam):
+    // gap between cluster means should exceed ~1 sticker pitch.
+    const side = stickers.map((s) => s.side).sort((a, b) => a - b)[n >> 1] || 30;
+    if (Math.abs(c1 - c0) < side * 1.3) return [stickers];
+    return [A, B];
   }
 
   // Order 4 arbitrary points into [TL, TR, BR, BL] (standard sum/diff trick).
@@ -570,28 +608,43 @@
     const stickers = findStickerSquares(cv, work, imgArea);
     if (stickers.length < 5) { work.delete(); return []; }
 
+    // A real cube face shows several distinct colors. Paper grids / desk
+    // reflections read as mostly-white with little variety — reject those.
+    const isCubeLike = (face) => new Set(face.cells.map((c) => c.code)).size >= 3;
+
     const results = [];
+    const emit = (grid, members) => {
+      const fullCorners = grid.corners.map((c) => ({ x: c.x * inv, y: c.y * inv }));
+      const face = sampleQuad(cv, src, fullCorners);
+      if (!isCubeLike(face)) return false;
+      face.region = null;
+      face.stickerCount = members.length;
+      results.push({
+        face, corners: fullCorners, stickerCount: members.length, method: "grid",
+        cluster: members.map((a) => ({
+          rect: { x: a.rect.x * inv, y: a.rect.y * inv, width: a.rect.width * inv, height: a.rect.height * inv },
+        })),
+      });
+      return true;
+    };
+
     const clusters = clusterStickers(stickers, true);
     for (const cluster of clusters) {
       if (cluster.length < 5) continue;
-      let grid = fitGrid(cluster);
-      if (!grid && cluster.length >= 8) {
-        for (const sub of splitByOrientation(cluster)) {
-          grid = fitGrid(sub);
-          if (grid) break;
+      // One face has at most 9 stickers; a bigger cluster is multiple faces
+      // merged → split first. Otherwise fit directly, splitting only if the fit
+      // fails.
+      const subs = cluster.length > 9 ? splitByOrientation(cluster) : [cluster];
+      for (const sub of subs) {
+        if (sub.length < 5) continue;
+        let grid = fitGrid(sub);
+        if (grid && emit(grid, sub)) continue;
+        if (sub.length >= 8) {                       // fit failed → try splitting
+          for (const s2 of splitByOrientation(sub)) {
+            const g2 = fitGrid(s2);
+            if (g2) emit(g2, s2);
+          }
         }
-      }
-      if (grid) {
-        const fullCorners = grid.corners.map((c) => ({ x: c.x * inv, y: c.y * inv }));
-        const face = sampleQuad(cv, src, fullCorners);
-        face.region = null;
-        face.stickerCount = cluster.length;
-        results.push({
-          face, corners: fullCorners, stickerCount: cluster.length, method: "grid",
-          cluster: cluster.map((a) => ({
-            rect: { x: a.rect.x * inv, y: a.rect.y * inv, width: a.rect.width * inv, height: a.rect.height * inv },
-          })),
-        });
       }
     }
     work.delete();

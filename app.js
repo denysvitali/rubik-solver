@@ -19,6 +19,7 @@
   let cvReady = false;
   let srcImg = null;     // HTMLImageElement currently loaded
   let lastFace = null;   // last detected face (for copy-to-clipboard)
+  let lastFaces = [];    // all detected faces (multi-face)
   let pickMode = false;  // manual corner-picking active
   let pickPts = [];      // clicked corners in full-resolution coords
 
@@ -227,15 +228,36 @@
     }
   }
 
+  const FACE_COLORS = ["#5fd97f", "#4f8cff", "#ffb43d", "#ff6fd0"];
+
   // ---- Run shared detector, then render ----
   function runDetection() {
     cancelPick();
     const full = fullResMat();
+    const ds = overlay.width / srcImg.naturalWidth;
+
+    // Primary: automatic multi-face detection (handles angled shots, 1-3 faces).
+    const faces = RubikDetector.detectFaces(cv, full);
+    if (faces.length > 0) {
+      full.delete();
+      lastFaces = faces.map((f) => f.face);
+      lastFace = lastFaces[0];
+      drawMultiOverlay(faces, ds);
+      renderMultiFaces(faces);
+      renderLegend();
+      diag.textContent =
+        `source: ${srcImg.naturalWidth}x${srcImg.naturalHeight}` +
+        `\nmethod: auto multi-face (grid)` +
+        `\nfaces detected: ${faces.length}` +
+        faces.map((f, i) => `\n  face ${i + 1}: ${f.stickerCount} stickers`).join("");
+      return;
+    }
+
+    // Fallback: single fronto-parallel face.
     const result = RubikDetector.detectCube(cv, full);
     full.delete();
-
     lastFace = result.face;
-    const ds = overlay.width / srcImg.naturalWidth;
+    lastFaces = [result.face];
 
     if (result.method === "grid" && result.corners) {
       drawPerspectiveOverlay(result.corners, result.cluster, ds);
@@ -251,11 +273,44 @@
     diag.textContent =
       `source: ${srcImg.naturalWidth}x${srcImg.naturalHeight}` +
       `\nwork: ${result.workSize.w}x${result.workSize.h} (fixed)` +
-      `\nmethod: ${result.method}` +
+      `\nmethod: ${result.method} (single-face fallback)` +
       `\nvivid squares: ${result.squareCount}` +
       `\nface stickers: ${result.stickerCount}` +
       regionInfo +
       (result.confident ? "" : "\n(low confidence — center crop)");
+  }
+
+  // Draw every detected face's quad + perspective 3x3 grid, each a distinct color.
+  function drawMultiOverlay(faces, ds) {
+    drawBase();
+    const ctx = overlay.getContext("2d");
+    const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    faces.forEach((f, fi) => {
+      const col = FACE_COLORS[fi % FACE_COLORS.length];
+      const c = RubikDetector.orderCorners(f.corners).map((p) => ({ x: p.x * ds, y: p.y * ds }));
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      c.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      ctx.closePath(); ctx.stroke();
+      ctx.lineWidth = 1;
+      ctx.globalAlpha = 0.6;
+      for (let i = 1; i < 3; i++) {
+        const t = i / 3;
+        const top = lerp(c[0], c[1], t), bot = lerp(c[3], c[2], t);
+        ctx.beginPath(); ctx.moveTo(top.x, top.y); ctx.lineTo(bot.x, bot.y); ctx.stroke();
+        const left = lerp(c[0], c[3], t), right = lerp(c[1], c[2], t);
+        ctx.beginPath(); ctx.moveTo(left.x, left.y); ctx.lineTo(right.x, right.y); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    });
+  }
+
+  function renderMultiFaces(faces) {
+    facesEl.innerHTML = "";
+    faces.forEach((f, i) => {
+      facesEl.appendChild(buildFaceCard(f.face, `Face ${i + 1} — ${f.stickerCount} stickers`, FACE_COLORS[i % FACE_COLORS.length]));
+    });
   }
 
   // ---- Overlay drawing (coords are full-res; scale to the display canvas) ----
@@ -320,23 +375,21 @@
     return out.trimEnd();
   }
 
-  function renderFaces(face) {
-    facesEl.innerHTML = "";
-    if (!face) { facesEl.innerHTML = '<div class="empty">No cube face detected.</div>'; return; }
-
+  // Build one face card (grid + per-face copy button). accent optionally
+  // tints the title to match the overlay color for that face.
+  function buildFaceCard(face, title, accent) {
     const card = document.createElement("div");
     card.className = "face-card";
 
     const head = document.createElement("div");
     head.className = "face-head";
     const h = document.createElement("h3");
-    h.textContent = face.detected
-      ? `Detected face — located via ${face.stickerCount ?? 0} sticker(s)`
-      : `Face (center crop — low confidence)`;
+    h.textContent = title;
+    if (accent) h.style.color = accent;
     const copyBtn = document.createElement("button");
     copyBtn.className = "btn secondary copy-btn";
     copyBtn.textContent = "Copy";
-    copyBtn.addEventListener("click", () => copyFace(copyBtn));
+    copyBtn.addEventListener("click", () => copyFace(face, copyBtn));
     head.appendChild(h);
     head.appendChild(copyBtn);
 
@@ -356,12 +409,21 @@
 
     card.appendChild(head);
     card.appendChild(grid);
-    facesEl.appendChild(card);
+    return card;
   }
 
-  function copyFace(btn) {
-    if (!lastFace) return;
-    const text = faceToText(lastFace);
+  function renderFaces(face) {
+    facesEl.innerHTML = "";
+    if (!face) { facesEl.innerHTML = '<div class="empty">No cube face detected.</div>'; return; }
+    const title = face.detected
+      ? `Detected face — located via ${face.stickerCount ?? 0} sticker(s)`
+      : `Face (center crop — low confidence)`;
+    facesEl.appendChild(buildFaceCard(face, title));
+  }
+
+  function copyFace(face, btn) {
+    if (!face) return;
+    const text = faceToText(face);
     const done = () => { btn.textContent = "Copied ✓"; setTimeout(() => (btn.textContent = "Copy"), 1500); };
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
