@@ -167,205 +167,119 @@
   });
 
   // ---- Core detection ----
+  //
+  // Strategy (validated against the reference photo, which also contains
+  // printed 3x3 grids on paper + a busy brick wall): brick, skin, hands and
+  // paper are all warm/neutral, so they share hue with the cube's red/orange/
+  // yellow stickers. The decisive discriminator is GREEN and BLUE — hues that
+  // simply don't occur in the background. We mask green+blue, find blob
+  // "anchors", cluster them by proximity (the cube's anchors sit together;
+  // stray teal arrows on paper are isolated), take the densest cluster, and
+  // use its squared bounding box as the face region. Then sample a 3x3 grid.
   function detect() {
     const src = cv.imread(overlay); // RGBA Mat of displayed image
-    const W = src.cols, H = src.rows;
+    const W = src.cols, H = src.rows, imgArea = W * H;
 
-    const gray = new cv.Mat();
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
-    const blur = new cv.Mat();
-    cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0);
-    const edges = new cv.Mat();
-    cv.Canny(blur, edges, 30, 90);
-    // close gaps so sticker borders form closed quads
-    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
-    const dil = new cv.Mat();
-    cv.dilate(edges, dil, kernel);
+    const anchors = findColorAnchors(src, imgArea);
+    const cluster = pickCubeCluster(anchors);
 
-    const contours = new cv.MatVector();
-    const hier = new cv.Mat();
-    cv.findContours(dil, contours, hier, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-
-    const stickers = []; // {cx, cy, area, side, pts}
-    const imgArea = W * H;
-    for (let i = 0; i < contours.size(); i++) {
-      const cnt = contours.get(i);
-      const area = cv.contourArea(cnt);
-      if (area < imgArea * 0.0008 || area > imgArea * 0.15) { cnt.delete(); continue; }
-      const peri = cv.arcLength(cnt, true);
-      const approx = new cv.Mat();
-      cv.approxPolyDP(cnt, approx, 0.04 * peri, true);
-      if (approx.rows === 4 && cv.isContourConvex(approx)) {
-        const r = cv.boundingRect(approx);
-        const ar = r.width / r.height;
-        if (ar > 0.6 && ar < 1.6) {
-          const sq = Math.abs(area - r.width * r.height) / (r.width * r.height);
-          if (sq < 0.45) {
-            const col = sampleRectColor(src, r);
-            stickers.push({
-              cx: r.x + r.width / 2,
-              cy: r.y + r.height / 2,
-              area,
-              side: (r.width + r.height) / 2,
-              rect: r,
-              sat: col.sat,
-              rgb: col.rgb,
-            });
-          }
-        }
-      }
-      approx.delete();
-      cnt.delete();
+    let region, confident;
+    if (cluster && cluster.length) {
+      region = squaredBBox(cluster, W, H);
+      confident = true;
+    } else {
+      region = { x: W * 0.2, y: H * 0.2, w: W * 0.6, h: H * 0.6 };
+      confident = false;
     }
 
-    const edgeCount = stickers.length;
+    const face = sampleGrid(src, region, confident);
+    face.region = region;
+    face.stickerCount = cluster ? cluster.length : 0;
 
-    // ---- Color-filter pass ----
-    // Cube stickers are vivid, solid colors. Threshold the HSV saturation/value
-    // to isolate colored regions (paper & white background drop out), then find
-    // square blobs the same way. This anchors directly on neighboring colored
-    // squares rather than relying on clean edges.
+    diag.textContent =
+      `image: ${W}x${H}\ngreen/blue anchors: ${anchors.length}` +
+      `\ncube cluster: ${cluster ? cluster.length : 0} anchors` +
+      `\nface region: ${Math.round(region.w)}x${Math.round(region.h)} @(${Math.round(region.x)},${Math.round(region.y)})` +
+      (confident ? "" : "\n(no green/blue found — using center crop)");
+
+    drawOverlay(cluster || [], [face]);
+    renderFaces([face]);
+    renderLegend();
+
+    src.delete();
+  }
+
+  // Detect green+blue blobs that look like cube stickers. Returns
+  // [{cx, cy, side, rect}]. These hues are absent from brick/skin/paper.
+  function findColorAnchors(src, imgArea) {
     const rgb = new cv.Mat();
     cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
     const hsv = new cv.Mat();
     cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
-    // S >= 70, V >= 60  (H spans full range — any saturated hue)
-    const low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 70, 60, 0]);
-    const high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 0]);
+    // H 40..135 spans green→blue (OpenCV hue is 0..180).
+    const low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [40, 70, 45, 0]);
+    const high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [135, 255, 255, 0]);
     const mask = new cv.Mat();
     cv.inRange(hsv, low, high, mask);
-    // close holes (glare/specular) then open to drop thin noise
-    const ck = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
-    cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, ck);
-    cv.morphologyEx(mask, mask, cv.MORPH_OPEN, ck);
+    cv.morphologyEx(mask, mask, cv.MORPH_OPEN,
+      cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2)));
 
-    const cContours = new cv.MatVector();
-    const cHier = new cv.Mat();
-    cv.findContours(mask, cContours, cHier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-    for (let i = 0; i < cContours.size(); i++) {
-      const cnt = cContours.get(i);
+    const cnts = new cv.MatVector();
+    const hier = new cv.Mat();
+    cv.findContours(mask, cnts, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    const anchors = [];
+    for (let i = 0; i < cnts.size(); i++) {
+      const cnt = cnts.get(i);
       const area = cv.contourArea(cnt);
-      if (area < imgArea * 0.0008 || area > imgArea * 0.15) { cnt.delete(); continue; }
       const r = cv.boundingRect(cnt);
       const ar = r.width / r.height;
-      const fill = area / (r.width * r.height); // how square/solid the blob is
-      if (ar > 0.6 && ar < 1.6 && fill > 0.6) {
-        const col = sampleRectColor(src, r);
-        stickers.push({
-          cx: r.x + r.width / 2,
-          cy: r.y + r.height / 2,
-          area,
-          side: (r.width + r.height) / 2,
-          rect: r,
-          sat: col.sat,
-          rgb: col.rgb,
-          src: "color",
-        });
+      const fill = area / (r.width * r.height);
+      // sticker-sized, roughly square-ish (allow tall/wide merges of 2 stickers)
+      if (area > imgArea * 0.0004 && area < imgArea * 0.05 &&
+          ar > 0.3 && ar < 3.2 && fill > 0.45) {
+        anchors.push({ cx: r.x + r.width / 2, cy: r.y + r.height / 2, side: Math.min(r.width, r.height), rect: r });
       }
       cnt.delete();
     }
-    const colorCount = stickers.length - edgeCount;
     rgb.delete(); hsv.delete(); low.delete(); high.delete();
-    mask.delete(); ck.delete(); cContours.delete(); cHier.delete();
-
-    // Deduplicate overlapping detections (nested contours of same sticker)
-    const dedup = [];
-    stickers.sort((a, b) => b.area - a.area);
-    for (const s of stickers) {
-      let dup = false;
-      for (const d of dedup) {
-        const dist = Math.hypot(s.cx - d.cx, s.cy - d.cy);
-        if (dist < d.side * 0.6) { dup = true; break; }
-      }
-      if (!dup) dedup.push(s);
-    }
-
-    diag.textContent =
-      `image: ${W}x${H}\nedge quads: ${edgeCount}\ncolor blobs: ${colorCount}` +
-      `\nunique stickers: ${dedup.length}`;
-
-    const faces = buildFaces(dedup, src);
-
-    drawOverlay(dedup, faces);
-    renderFaces(faces);
-    renderLegend();
-
-    src.delete(); gray.delete(); blur.delete(); edges.delete();
-    dil.delete(); kernel.delete(); contours.delete(); hier.delete();
+    mask.delete(); cnts.delete(); hier.delete();
+    return anchors;
   }
 
-  // Group stickers into 3x3 face(s).
-  //
-  // A cube face is a tight cluster of ~9 similar-sized quads. The reference
-  // photo also contains *drawn* 3x3 grids on paper — same shape, but white &
-  // unsaturated. So we cluster quads spatially (connected components by
-  // proximity + similar size), then score each cluster, rewarding both a
-  // count near 9 and high color saturation. The vivid cube wins over paper.
-  function buildFaces(stickers, srcMat) {
-    if (stickers.length < 4) {
-      return [sampleGrid(srcMat, {
-        x: srcMat.cols * 0.2, y: srcMat.rows * 0.2,
-        w: srcMat.cols * 0.6, h: srcMat.rows * 0.6,
-      }, false)];
-    }
-
-    const clusters = clusterStickers(stickers);
-    if (!clusters.length) {
-      return [sampleGrid(srcMat, {
-        x: srcMat.cols * 0.2, y: srcMat.rows * 0.2,
-        w: srcMat.cols * 0.6, h: srcMat.rows * 0.6,
-      }, false)];
-    }
-
-    const scored = clusters.map((c) => {
-      const meanSat = c.reduce((a, s) => a + s.sat, 0) / c.length;
-      // count score peaks at 9 stickers
-      const countScore = 1 - Math.min(1, Math.abs(c.length - 9) / 9);
-      const score = meanSat * 0.7 + countScore * 0.3;
-      return { c, meanSat, score };
-    }).sort((a, b) => b.score - a.score);
-
-    const best = scored[0].c;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const s of best) {
-      minX = Math.min(minX, s.rect.x);
-      minY = Math.min(minY, s.rect.y);
-      maxX = Math.max(maxX, s.rect.x + s.rect.width);
-      maxY = Math.max(maxY, s.rect.y + s.rect.height);
-    }
-    // Pad to nearest sticker so the bbox snaps to a full 3x3 even if a corner
-    // sticker was missed by contour detection.
-    const region = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-    const face = sampleGrid(srcMat, region, true);
-    face.region = region;
-    face.stickerCount = best.length;
-    diag.textContent += `\nclusters: ${clusters.length}` +
-      `\nbest cluster: ${best.length} stickers, sat=${scored[0].meanSat.toFixed(2)}`;
-    return [face];
-  }
-
-  // Connected-component clustering: two stickers are linked if their centers
-  // are within ~1.7× the larger sticker's side AND sizes are comparable.
-  function clusterStickers(stickers) {
-    const n = stickers.length;
-    const parent = Array.from({ length: n }, (_, i) => i);
-    const find = (x) => { while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
-    const union = (a, b) => { parent[find(a)] = find(b); };
+  // Cluster anchors by proximity (union-find), return the largest cluster.
+  function pickCubeCluster(anchors) {
+    const n = anchors.length;
+    if (!n) return null;
+    const sides = anchors.map((a) => a.side).sort((x, y) => x - y);
+    const med = sides[n >> 1] || 20;
+    const par = anchors.map((_, i) => i);
+    const find = (x) => { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; };
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
-        const a = stickers[i], b = stickers[j];
-        const big = Math.max(a.side, b.side);
-        const sizeRatio = Math.min(a.side, b.side) / big;
-        const dist = Math.hypot(a.cx - b.cx, a.cy - b.cy);
-        if (sizeRatio > 0.55 && dist < big * 1.7) union(i, j);
+        const d = Math.hypot(anchors[i].cx - anchors[j].cx, anchors[i].cy - anchors[j].cy);
+        if (d < med * 4) par[find(i)] = find(j);
       }
     }
     const groups = {};
-    for (let i = 0; i < n; i++) {
-      const root = find(i);
-      (groups[root] = groups[root] || []).push(stickers[i]);
+    anchors.forEach((a, i) => { const r = find(i); (groups[r] = groups[r] || []).push(a); });
+    return Object.values(groups).sort((a, b) => b.length - a.length)[0];
+  }
+
+  // Squared, slightly padded bounding box of a set of anchors, clamped to image.
+  function squaredBBox(cluster, W, H) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const a of cluster) {
+      minX = Math.min(minX, a.rect.x); minY = Math.min(minY, a.rect.y);
+      maxX = Math.max(maxX, a.rect.x + a.rect.width); maxY = Math.max(maxY, a.rect.y + a.rect.height);
     }
-    return Object.values(groups).filter((g) => g.length >= 3);
+    const pad = 0.10;
+    const rw = (maxX - minX) * (1 + 2 * pad), rh = (maxY - minY) * (1 + 2 * pad);
+    const cX = (minX + maxX) / 2, cY = (minY + maxY) / 2;
+    const sz = Math.max(rw, rh); // cube face is square
+    let x = cX - sz / 2, y = cY - sz / 2;
+    x = Math.max(0, Math.min(x, W - sz));
+    y = Math.max(0, Math.min(y, H - sz));
+    return { x, y, w: sz, h: sz };
   }
 
   // Sample a 3x3 grid of average colors from a rectangular region.
