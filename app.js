@@ -10,6 +10,7 @@
   const drop = $("drop");
   const detectBtn = $("detectBtn");
   const sampleBtn = $("sampleBtn");
+  const pickBtn = $("pickBtn");
   const facesEl = $("faces");
   const legendEl = $("legend");
   const diag = $("diag");
@@ -18,13 +19,21 @@
   let cvReady = false;
   let srcImg = null;     // HTMLImageElement currently loaded
   let lastFace = null;   // last detected face (for copy-to-clipboard)
+  let pickMode = false;  // manual corner-picking active
+  let pickPts = [];      // clicked corners in full-resolution coords
+
+  const enableActions = () => {
+    const on = cvReady && srcImg;
+    detectBtn.disabled = !on;
+    pickBtn.disabled = !on;
+  };
 
   // ---- OpenCV load handling ----
   function onCvReady() {
     cvReady = true;
     statusEl.textContent = "OpenCV ready";
     statusEl.classList.add("ready");
-    if (srcImg) detectBtn.disabled = false;
+    enableActions();
   }
 
   function waitForCv() {
@@ -49,8 +58,9 @@
     img.crossOrigin = "anonymous";
     img.onload = () => {
       srcImg = img;
+      cancelPick();
       drawBase();
-      if (cvReady) detectBtn.disabled = false;
+      enableActions();
       statusEl.textContent = cvReady ? "OpenCV ready — image loaded" : "Loading OpenCV…";
       statusEl.classList.toggle("ready", cvReady);
     };
@@ -116,8 +126,110 @@
     }, 30);
   });
 
+  // ---- Manual corner picking (for angled / multi-face photos) ----
+  pickBtn.addEventListener("click", () => {
+    if (!cvReady || !srcImg) return;
+    if (pickMode) { cancelPick(); return; }
+    pickMode = true;
+    pickPts = [];
+    pickBtn.textContent = "Cancel";
+    statusEl.textContent = "Click corner 1 of 4 (any face, in order around it)";
+    statusEl.classList.remove("ready");
+    drawBase();
+  });
+
+  function cancelPick() {
+    pickMode = false;
+    pickPts = [];
+    if (pickBtn) pickBtn.textContent = "Pick corners";
+  }
+
+  overlay.addEventListener("click", (e) => {
+    if (!pickMode || !srcImg) return;
+    const rect = overlay.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) * (overlay.width / rect.width);
+    const cy = (e.clientY - rect.top) * (overlay.height / rect.height);
+    const ds = overlay.width / srcImg.naturalWidth;         // display → full-res
+    pickPts.push({ x: cx / ds, y: cy / ds });
+    drawPickProgress(ds);
+    if (pickPts.length < 4) {
+      statusEl.textContent = `Click corner ${pickPts.length + 1} of 4`;
+    } else {
+      finishPick();
+    }
+  });
+
+  function drawPickProgress(ds) {
+    drawBase();
+    const ctx = overlay.getContext("2d");
+    ctx.fillStyle = "#ff3df0";
+    ctx.strokeStyle = "rgba(255,61,240,0.9)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    pickPts.forEach((p, i) => {
+      const x = p.x * ds, y = p.y * ds;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    if (pickPts.length > 1) ctx.stroke();
+    for (const p of pickPts) {
+      ctx.beginPath();
+      ctx.arc(p.x * ds, p.y * ds, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function finishPick() {
+    const corners = pickPts.slice(); // snapshot before cancelPick() clears it
+    cancelPick();
+    statusEl.innerHTML = '<span class="spinner"></span> Warping & reading face…';
+    setTimeout(() => {
+      try {
+        const full = fullResMat();
+        const face = RubikDetector.sampleQuad(cv, full, corners);
+        full.delete();
+        lastFace = face;
+        const ds = overlay.width / srcImg.naturalWidth;
+        drawQuadOverlay(face, ds);
+        renderFaces(face);
+        renderLegend();
+        diag.textContent =
+          `source: ${srcImg.naturalWidth}x${srcImg.naturalHeight}` +
+          `\nmethod: manual corners (perspective warp)`;
+        statusEl.textContent = "Detection complete (manual)";
+        statusEl.classList.add("ready");
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "Manual detect error: " + err.message;
+      }
+    }, 30);
+  }
+
+  function drawQuadOverlay(face, ds) {
+    drawBase();
+    const ctx = overlay.getContext("2d");
+    const c = face.corners.map((p) => ({ x: p.x * ds, y: p.y * ds }));
+    // outer quad
+    ctx.strokeStyle = "rgba(95,217,127,0.95)";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    c.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+    ctx.closePath(); ctx.stroke();
+    // perspective 3x3 grid via edge interpolation (TL,TR,BR,BL)
+    const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    ctx.strokeStyle = "rgba(95,217,127,0.55)";
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 3; i++) {
+      const t = i / 3;
+      const top = lerp(c[0], c[1], t), bot = lerp(c[3], c[2], t);
+      ctx.beginPath(); ctx.moveTo(top.x, top.y); ctx.lineTo(bot.x, bot.y); ctx.stroke();
+      const left = lerp(c[0], c[3], t), right = lerp(c[1], c[2], t);
+      ctx.beginPath(); ctx.moveTo(left.x, left.y); ctx.lineTo(right.x, right.y); ctx.stroke();
+    }
+  }
+
   // ---- Run shared detector, then render ----
   function runDetection() {
+    cancelPick();
     const full = fullResMat();
     const result = RubikDetector.detectCube(cv, full);
     full.delete();

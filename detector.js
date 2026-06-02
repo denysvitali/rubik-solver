@@ -208,6 +208,34 @@
     return { x, y, w: sz, h: sz };
   }
 
+  // Order 4 arbitrary points into [TL, TR, BR, BL] (standard sum/diff trick).
+  function orderCorners(pts) {
+    const bySum = [...pts].sort((a, b) => (a.x + a.y) - (b.x + b.y));
+    const tl = bySum[0], br = bySum[3];
+    const byDiff = [...pts].sort((a, b) => (a.x - a.y) - (b.x - b.y));
+    const bl = byDiff[0], tr = byDiff[3];
+    return [tl, tr, br, bl];
+  }
+
+  // Sample a face from 4 user-clicked corners (full-res coords) by warping the
+  // quad to a square with a perspective transform, then reading the 3x3. Works
+  // for any angle/perspective. Returns a face {cells, detected} + the ordered
+  // corners used.
+  function sampleQuad(cv, src, corners) {
+    const o = orderCorners(corners);
+    const S = 300;
+    const srcTri = cv.matFromArray(4, 1, cv.CV_32FC2,
+      [o[0].x, o[0].y, o[1].x, o[1].y, o[2].x, o[2].y, o[3].x, o[3].y]);
+    const dstTri = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, S, 0, S, S, 0, S]);
+    const M = cv.getPerspectiveTransform(srcTri, dstTri);
+    const warped = new cv.Mat();
+    cv.warpPerspective(src, warped, M, new cv.Size(S, S), cv.INTER_AREA, cv.BORDER_REPLICATE, new cv.Scalar());
+    const face = sampleGrid(warped, { x: 0, y: 0, w: S, h: S }, true);
+    face.corners = o;
+    srcTri.delete(); dstTri.delete(); M.delete(); warped.delete();
+    return face;
+  }
+
   // Main entry. `src` is a full-resolution RGBA cv.Mat. Returns the detected
   // face + region/anchors expressed in `src` (full-resolution) coordinates,
   // so the caller can overlay them on the original image at any display scale.
@@ -268,5 +296,5 @@
     };
   }
 
-  return { detectCube, classifyColor, sampleGrid, cellColor, findStickerSquares, clusterStickers, findColorAnchors, pickCubeCluster, squaredBBox, COLORS, WORK_WIDTH };
+  return { detectCube, sampleQuad, orderCorners, classifyColor, sampleGrid, cellColor, findStickerSquares, clusterStickers, findColorAnchors, pickCubeCluster, squaredBBox, COLORS, WORK_WIDTH };
 });

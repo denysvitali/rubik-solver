@@ -137,11 +137,12 @@
     <div class="row">
       <button class="btn secondary" id="sampleBtn">Load sample</button>
       <button class="btn" id="detectBtn" disabled>Detect cube</button>
+      <button class="btn secondary" id="pickBtn" disabled title="Click the 4 corners of one cube face — works for angled/perspective shots">Pick corners</button>
     </div>
     <div id="canvasWrap">
       <canvas id="overlay"></canvas>
     </div>
-    <p class="hint">Detection finds the cube's 3×3 grid via contour analysis, then samples each sticker's color (HSV classification into the 6 standard colors).</p>
+    <p class="hint">Auto-detect targets a single fronto-parallel face. For angled or multi-face shots, use <strong>Pick corners</strong> and click the 4 corners of one face (clockwise or counter-clockwise) — it perspective-warps that face and reads the 3×3.</p>
     <details>
       <summary>Diagnostics</summary>
       <pre id="diag">—</pre>
