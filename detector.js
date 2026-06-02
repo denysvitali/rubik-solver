@@ -699,9 +699,11 @@
     return { cells, detected: true };
   }
 
+  const GEO_WORK = 900; // geometric path needs more silhouette precision than 600
+
   function detectFacesGeometric(cv, src) {
     const W0 = src.cols, H0 = src.rows;
-    const scale = WORK_WIDTH / W0;
+    const scale = GEO_WORK / W0;
     const W = Math.max(1, Math.round(W0 * scale)), H = Math.max(1, Math.round(H0 * scale));
     const work = new cv.Mat();
     cv.resize(src, work, new cv.Size(W, H), 0, 0, cv.INTER_AREA);
@@ -713,13 +715,15 @@
     const rgb = new cv.Mat(); cv.cvtColor(work, rgb, cv.COLOR_RGBA2RGB);
     const hsv = new cv.Mat(); cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
     cleanup.push(rgb, hsv);
-    // Cube = dominant highly-saturated region (skin/wood/desk are duller).
-    const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 120, 50, 0]);
+    // Cube = dominant HIGHLY-saturated region. Skin/wood/desk are duller; a
+    // high S floor keeps them out. OPEN first severs thin bridges to the hand /
+    // background, then CLOSE bridges glare gaps & seams within the cube.
+    const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 150, 60, 0]);
     const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 0]);
     const mask = new cv.Mat(); cv.inRange(hsv, lo, hi, mask);
     cleanup.push(lo, hi, mask);
-    cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(15, 15)));
-    cv.morphologyEx(mask, mask, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(9, 9)));
+    cv.morphologyEx(mask, mask, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(13, 13)));
+    cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(21, 21)));
 
     const cnts = new cv.MatVector(); const hier = new cv.Mat();
     cv.findContours(mask, cnts, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
@@ -728,52 +732,62 @@
     for (let i = 0; i < cnts.size(); i++) { const a = cv.contourArea(cnts.get(i)); if (a > bestA) { bestA = a; best = i; } }
     if (best < 0 || bestA < W * H * 0.03) return done();
 
-    const hull = new cv.Mat(); cv.convexHull(cnts.get(best), hull, false, true);
-    cleanup.push(hull);
-    const peri = cv.arcLength(hull, true);
-    // adaptively pick an epsilon giving 4 or 6 corners
-    let V = null;
-    for (const eps of [0.02, 0.03, 0.04, 0.05, 0.06, 0.08]) {
-      const ap = new cv.Mat(); cv.approxPolyDP(hull, ap, eps * peri, true);
-      const n = ap.rows;
-      if (n === 4 || n === 6) {
-        V = []; for (let i = 0; i < n; i++) V.push({ x: ap.data32S[i * 2], y: ap.data32S[i * 2 + 1] });
-        ap.delete(); break;
-      }
+    const hullM = new cv.Mat(); cv.convexHull(cnts.get(best), hullM, false, true);
+    cleanup.push(hullM);
+    const hull = []; for (let i = 0; i < hullM.rows; i++) hull.push({ x: hullM.data32S[i * 2], y: hullM.data32S[i * 2 + 1] });
+    const peri = cv.arcLength(hullM, true);
+    // adaptively pick an epsilon giving 4 (single face) or 6 (three faces) corners
+    let corners = null;
+    for (const eps of [0.02, 0.025, 0.03, 0.035, 0.04, 0.05, 0.06, 0.08]) {
+      const ap = new cv.Mat(); cv.approxPolyDP(hullM, ap, eps * peri, true);
+      if (ap.rows === 4 || ap.rows === 6) { corners = []; for (let i = 0; i < ap.rows; i++) corners.push({ x: ap.data32S[i * 2], y: ap.data32S[i * 2 + 1] }); ap.delete(); break; }
       ap.delete();
     }
-    if (!V) return done();
+    if (!corners) return done();
+    const N = corners.length;
+
+    // Refine corners: fit a line to each silhouette edge (the hull points
+    // between consecutive approx corners), intersect adjacent fitted lines.
+    const idx = corners.map((c) => { let bi = 0, bd = Infinity; hull.forEach((h, i) => { const d = (h.x - c.x) ** 2 + (h.y - c.y) ** 2; if (d < bd) { bd = d; bi = i; } }); return bi; });
+    const fitEdge = (i0, i1) => {
+      const pts = []; let i = i0; for (let g = 0; g < hull.length; g++) { pts.push(hull[i]); if (i === i1) break; i = (i + 1) % hull.length; }
+      if (pts.length < 2) return null;
+      const m = cv.matFromArray(pts.length, 1, cv.CV_32FC2, pts.flatMap((p) => [p.x, p.y]));
+      const ln = new cv.Mat(); cv.fitLine(m, ln, cv.DIST_L2, 0, 0.01, 0.01);
+      const r = { d: { x: ln.data32F[0], y: ln.data32F[1] }, p: { x: ln.data32F[2], y: ln.data32F[3] } };
+      m.delete(); ln.delete(); return r;
+    };
+    const interLine = (a, b) => { const den = a.d.x * b.d.y - a.d.y * b.d.x; if (Math.abs(den) < 1e-9) return null; const t = ((b.p.x - a.p.x) * b.d.y - (b.p.y - a.p.y) * b.d.x) / den; return { x: a.p.x + t * a.d.x, y: a.p.y + t * a.d.y }; };
+    const E = []; for (let i = 0; i < N; i++) E.push(fitEdge(idx[i], idx[(i + 1) % N]));
+    const V = [];
+    for (let i = 0; i < N; i++) { const a = E[(i + N - 1) % N], b = E[i]; const v = (a && b) ? interLine(a, b) : null; V.push(v || corners[i]); }
 
     const toFull = (q) => q.map((p) => ({ x: p.x * inv, y: p.y * inv }));
     const hd = hsv.data;
-    const darkAlong = (a, b) => {
-      let s = 0, n = 0; const st = Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y)) | 0;
-      for (let i = 0; i <= st; i++) { const t = st ? i / st : 0, x = (a.x + (b.x - a.x) * t) | 0, y = (a.y + (b.y - a.y) * t) | 0; if (x < 0 || y < 0 || x >= W || y >= H) continue; s += hd[(y * W + x) * 3 + 2]; n++; }
-      return n ? s / n : 255;
-    };
+    const darkAlong = (a, b) => { let s = 0, n = 0; const st = Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y)) | 0; for (let i = 0; i <= st; i++) { const t = st ? i / st : 0, x = (a.x + (b.x - a.x) * t) | 0, y = (a.y + (b.y - a.y) * t) | 0; if (x < 0 || y < 0 || x >= W || y >= H) continue; s += hd[(y * W + x) * 3 + 2]; n++; } return n ? s / n : 255; };
 
-    if (V.length === 4) {
+    if (N === 4) {
       const quad = toFull(V);
-      const face = readFaceQuad(cv, src, quad);
-      out.push({ face, corners: quad, stickerCount: 4, method: "geometric-1face", cluster: [] });
+      out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 4, method: "geometric-1face", cluster: [] });
       return done();
     }
 
-    // 6 corners → three faces. C ≈ intersection of the main diagonals.
+    // 6 corners → three faces. Near-corner C = intersection of main diagonals
+    // (robust for near-isometric views; far vanishing points make a VP-based C
+    // numerically unstable).
     const i1 = lineIntersect(V[0], V[3], V[1], V[4]);
     const i2 = lineIntersect(V[1], V[4], V[2], V[5]);
     const i3 = lineIntersect(V[0], V[3], V[2], V[5]);
     if (!i1 || !i2 || !i3) return done();
     const C = { x: (i1.x + i2.x + i3.x) / 3, y: (i1.y + i2.y + i3.y) / 3 };
-    // side vertices = the alternating set whose edges-from-C are darker (= real seams)
+    // side vertices = the alternating set whose edges-from-C run along dark seams
     const evenDark = (darkAlong(C, V[0]) + darkAlong(C, V[2]) + darkAlong(C, V[4])) / 3;
     const oddDark = (darkAlong(C, V[1]) + darkAlong(C, V[3]) + darkAlong(C, V[5])) / 3;
     const sideStart = evenDark <= oddDark ? 0 : 1;
     for (let k = 0; k < 3; k++) {
       const a = (sideStart + 2 * k) % 6, b = (a + 1) % 6, c = (a + 2) % 6;
       const quad = toFull([C, V[a], V[b], V[c]]);
-      const face = readFaceQuad(cv, src, quad);
-      out.push({ face, corners: quad, stickerCount: 9, method: "geometric-3face", cluster: [] });
+      out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 9, method: "geometric-3face", cluster: [] });
     }
     return done();
   }

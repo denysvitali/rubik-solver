@@ -295,7 +295,9 @@
     const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
     faces.forEach((f, fi) => {
       const col = FACE_COLORS[fi % FACE_COLORS.length];
-      const c = RubikDetector.orderCorners(f.corners).map((p) => ({ x: p.x * ds, y: p.y * ds }));
+      // use the corners in their native order — it matches the perspective warp
+      // used to sample the 3x3 (re-ordering would misdraw geometric face quads)
+      const c = f.corners.map((p) => ({ x: p.x * ds, y: p.y * ds }));
       ctx.strokeStyle = col;
       ctx.lineWidth = 3;
       ctx.beginPath();

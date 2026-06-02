@@ -142,7 +142,7 @@
     <div id="canvasWrap">
       <canvas id="overlay"></canvas>
     </div>
-    <p class="hint">Auto-detect targets a single fronto-parallel face. For angled or multi-face shots, use <strong>Pick corners</strong> and click the 4 corners of one face (clockwise or counter-clockwise) — it perspective-warps that face and reads the 3×3.</p>
+    <p class="hint">Auto-detect handles flat-sticker cubes (1–2 faces, sticker grid) and falls back to a top-down geometric silhouette method for glossy/stickerless angled cubes (up to 3 faces). <strong>Pick corners</strong> is a manual fallback: click the 4 corners of one face to perspective-warp and read it.</p>
     <details>
       <summary>Diagnostics</summary>
       <pre id="diag">—</pre>
