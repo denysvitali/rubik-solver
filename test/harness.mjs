@@ -4,6 +4,7 @@ import puppeteer from "puppeteer";
 
 const URL = "http://localhost:8085/";
 const SHOT = process.argv[2] || "shot.png";
+const IMG = process.argv[3] || "sample.jpg"; // served file to detect
 
 const browser = await puppeteer.launch({
   headless: "new",
@@ -25,8 +26,11 @@ await page.waitForFunction(
   { timeout: 60000 }
 ).catch(() => logs.push("[harness] OpenCV never became ready"));
 
-// Load sample, wait for detect button enabled
-await page.click("#sampleBtn");
+// Load the target image (via the page's own loader) and wait for detect enabled
+await page.evaluate((src) => { window.__loadForTest(src); }, IMG).catch(() => {
+  logs.push("[harness] __loadForTest missing; falling back to sample button");
+  return page.click("#sampleBtn");
+});
 await page.waitForFunction(
   () => !document.getElementById("detectBtn")?.disabled,
   { timeout: 30000 }
