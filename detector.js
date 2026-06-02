@@ -790,15 +790,28 @@
       return done();
     }
 
-    // 6 corners → three faces. Near-corner C = intersection of main diagonals
-    // (robust for near-isometric views; far vanishing points make a VP-based C
-    // numerically unstable).
+    // 6 corners → three faces. Solve the true PERSPECTIVE camera pose (PnP)
+    // from the 6 silhouette corners ↔ a canonical cube's 6 silhouette vertices,
+    // then project all 8 corners. This recovers the near-corner & faces under
+    // real perspective (affine heuristics collapse the near-corner to the cube
+    // center on tilted views). Falls back to affine if PnP fails.
+    const P = solveCubePose(cv, V, W, H);
+    if (P) {
+      // faces meeting at the near corner (idx0): X+ [0,1,2,3], Y+ [0,1,5,4], Z+ [0,3,7,4]
+      const faceIdx = [[0, 1, 2, 3], [0, 1, 5, 4], [0, 3, 7, 4]];
+      for (const fi of faceIdx) {
+        const quad = toFull(fi.map((i) => P[i]));
+        out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 9, method: "geometric-pnp", cluster: [] });
+      }
+      return done();
+    }
+
+    // Fallback: affine near-corner = intersection of main diagonals.
     const i1 = lineIntersect(V[0], V[3], V[1], V[4]);
     const i2 = lineIntersect(V[1], V[4], V[2], V[5]);
     const i3 = lineIntersect(V[0], V[3], V[2], V[5]);
     if (!i1 || !i2 || !i3) return done();
     const C = { x: (i1.x + i2.x + i3.x) / 3, y: (i1.y + i2.y + i3.y) / 3 };
-    // side vertices = the alternating set whose edges-from-C run along dark seams
     const evenDark = (darkAlong(C, V[0]) + darkAlong(C, V[2]) + darkAlong(C, V[4])) / 3;
     const oddDark = (darkAlong(C, V[1]) + darkAlong(C, V[3]) + darkAlong(C, V[5])) / 3;
     const sideStart = evenDark <= oddDark ? 0 : 1;
@@ -808,6 +821,50 @@
       out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 9, method: "geometric-3face", cluster: [] });
     }
     return done();
+  }
+
+  // Solve cube camera pose from 6 ordered silhouette corners (work coords).
+  // Returns the 8 cube corners projected to WORK coords, or null.
+  // Order of returned points: 0=near(+++),1=(++-),2=(+--),3=(+-+),
+  //   4=(-++),5=(-+-),6=far(---),7=(--+)  (units of ±0.5).
+  function solveCubePose(cv, V, W, H) {
+    // canonical cube silhouette ring (cyclic) ↔ the 6 image corners
+    const M6 = [[.5, -.5, -.5], [.5, .5, -.5], [-.5, .5, -.5], [-.5, .5, .5], [-.5, -.5, .5], [.5, -.5, .5]];
+    const ALL = [.5, .5, .5, .5, .5, -.5, .5, -.5, -.5, .5, -.5, .5, -.5, .5, .5, -.5, .5, -.5, -.5, -.5, -.5, -.5, -.5, .5];
+    const f = 1.2 * W;
+    const K = cv.matFromArray(3, 3, cv.CV_64F, [f, 0, W / 2, 0, f, H / 2, 0, 0, 1]);
+    const D = cv.matFromArray(1, 5, cv.CV_64F, [0, 0, 0, 0, 0]);
+    const obj = cv.matFromArray(6, 3, cv.CV_64F, M6.flat());
+    let best = null;
+    for (let dir = 0; dir < 2; dir++) {
+      for (let rot = 0; rot < 6; rot++) {
+        const order = []; for (let i = 0; i < 6; i++) order.push(dir ? (rot - i + 12) % 6 : (rot + i) % 6);
+        const img = cv.matFromArray(6, 2, cv.CV_64F, order.flatMap((i) => [V[i].x, V[i].y]));
+        const rv = new cv.Mat(), tv = new cv.Mat();
+        let ok = false;
+        try { ok = cv.solvePnP(obj, img, K, D, rv, tv, false, cv.SOLVEPNP_ITERATIVE); } catch (e) { ok = false; }
+        if (ok) {
+          const proj = new cv.Mat(), jac = new cv.Mat();
+          cv.projectPoints(obj, rv, tv, K, D, proj, jac);
+          let err = 0; for (let i = 0; i < 6; i++) { const dx = proj.data64F[i * 2] - V[order[i]].x, dy = proj.data64F[i * 2 + 1] - V[order[i]].y; err += dx * dx + dy * dy; }
+          err = Math.sqrt(err / 6); proj.delete(); jac.delete();
+          if (!best || err < best.err) { if (best) { best.rv.delete(); best.tv.delete(); } best = { err, rv, tv }; }
+          else { rv.delete(); tv.delete(); }
+        } else { rv.delete(); tv.delete(); }
+        img.delete();
+      }
+    }
+    let result = null;
+    if (best && best.err < W * 0.08) { // accept only a reasonable fit
+      const allObj = cv.matFromArray(8, 3, cv.CV_64F, ALL);
+      const proj = new cv.Mat(), jac = new cv.Mat();
+      cv.projectPoints(allObj, best.rv, best.tv, K, D, proj, jac);
+      result = []; for (let i = 0; i < 8; i++) result.push({ x: proj.data64F[i * 2], y: proj.data64F[i * 2 + 1] });
+      allObj.delete(); proj.delete(); jac.delete();
+    }
+    if (best) { best.rv.delete(); best.tv.delete(); }
+    K.delete(); D.delete(); obj.delete();
+    return result;
   }
 
   return { detectCube, detectFaces, detectFacesGeometric, readFaceQuad, sampleQuad, orderCorners, classifyColor, sampleGrid, cellColor, findStickerSquares, clusterStickers, findColorAnchors, pickCubeCluster, squaredBBox, fitGrid, splitByOrientation, COLORS, WORK_WIDTH };
