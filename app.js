@@ -236,8 +236,16 @@
     const full = fullResMat();
     const ds = overlay.width / srcImg.naturalWidth;
 
-    // Primary: automatic multi-face detection (handles angled shots, 1-3 faces).
-    const faces = RubikDetector.detectFaces(cv, full);
+    // Primary: sticker-based multi-face (flat-sticker cubes, 1-2 faces).
+    // Fallback: top-down geometric (glossy/stickerless/borderless cubes, where
+    // per-piece segmentation fails — segments the cube silhouette and splits it
+    // into 1 or 3 face quads).
+    let faces = RubikDetector.detectFaces(cv, full);
+    let geometric = false;
+    if (faces.length === 0) {
+      faces = RubikDetector.detectFacesGeometric(cv, full);
+      geometric = faces.length > 0;
+    }
     if (faces.length > 0) {
       full.delete();
       lastFaces = faces.map((f) => f.face);
@@ -247,9 +255,9 @@
       renderLegend();
       diag.textContent =
         `source: ${srcImg.naturalWidth}x${srcImg.naturalHeight}` +
-        `\nmethod: auto multi-face (grid)` +
+        `\nmethod: ${geometric ? "auto multi-face (geometric silhouette)" : "auto multi-face (sticker grid)"}` +
         `\nfaces detected: ${faces.length}` +
-        faces.map((f, i) => `\n  face ${i + 1}: ${f.stickerCount} stickers`).join("");
+        faces.map((f, i) => `\n  face ${i + 1}: ${f.method || "grid"}`).join("");
       return;
     }
 

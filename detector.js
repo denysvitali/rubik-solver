@@ -651,5 +651,132 @@
     return results;
   }
 
-  return { detectCube, detectFaces, sampleQuad, orderCorners, classifyColor, sampleGrid, cellColor, findStickerSquares, clusterStickers, findColorAnchors, pickCubeCluster, squaredBBox, fitGrid, splitByOrientation, COLORS, WORK_WIDTH };
+  // ---- Top-down GEOMETRIC detector (for glossy/stickerless/borderless cubes
+  // where per-piece segmentation fails). Segment the cube as one saturated
+  // silhouette, approximate it: a single fronto-parallel face -> 4-corner
+  // square; an angled cube showing three faces -> 6-corner hexagon, which we
+  // split at the near "Y-vertex" into three face quads. Each quad is then
+  // perspective-warped and sampled with glare exclusion + median hue. ----
+
+  function lineIntersect(a, b, c, d) {
+    const den = (a.x - b.x) * (c.y - d.y) - (a.y - b.y) * (c.x - d.x);
+    if (Math.abs(den) < 1e-6) return null;
+    const t = ((a.x - c.x) * (c.y - d.y) - (a.y - c.y) * (c.x - d.x)) / den;
+    return { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) };
+  }
+
+  // Read a face quad: perspective-warp to a square, sample a 3x3 of median
+  // hue, excluding specular glare (high V, low S).
+  function readFaceQuad(cv, src, quad) {
+    const S = 300;
+    const srcT = cv.matFromArray(4, 1, cv.CV_32FC2,
+      [quad[0].x, quad[0].y, quad[1].x, quad[1].y, quad[2].x, quad[2].y, quad[3].x, quad[3].y]);
+    const dstT = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, S, 0, S, S, 0, S]);
+    const M = cv.getPerspectiveTransform(srcT, dstT);
+    const warp = new cv.Mat();
+    cv.warpPerspective(src, warp, M, new cv.Size(S, S), cv.INTER_LINEAR, cv.BORDER_REPLICATE, new cv.Scalar());
+    const wd = warp.data, cell = S / 3, cells = [];
+    for (let gy = 0; gy < 3; gy++) {
+      for (let gx = 0; gx < 3; gx++) {
+        const cx = cell * (gx + 0.5), cy = cell * (gy + 0.5), rad = cell * 0.22;
+        const rs = [], gs = [], bs = [];
+        for (let y = Math.floor(cy - rad); y < cy + rad; y++) {
+          for (let x = Math.floor(cx - rad); x < cx + rad; x++) {
+            if (x < 0 || y < 0 || x >= S || y >= S) continue;
+            const i = (y * S + x) * 4, r = wd[i], g = wd[i + 1], b = wd[i + 2];
+            const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+            const v = mx, s = mx ? (mx - mn) / mx * 255 : 0;
+            if (v > 220 && s < 50) continue; // specular glare → skip
+            rs.push(r); gs.push(g); bs.push(b);
+          }
+        }
+        const med = (a) => (a.length ? a.sort((x, y) => x - y)[a.length >> 1] : 0);
+        const r = med(rs), g = med(gs), b = med(bs);
+        cells.push({ code: classifyColor(r, g, b), rgb: [r, g, b], cx, cy });
+      }
+    }
+    srcT.delete(); dstT.delete(); M.delete(); warp.delete();
+    return { cells, detected: true };
+  }
+
+  function detectFacesGeometric(cv, src) {
+    const W0 = src.cols, H0 = src.rows;
+    const scale = WORK_WIDTH / W0;
+    const W = Math.max(1, Math.round(W0 * scale)), H = Math.max(1, Math.round(H0 * scale));
+    const work = new cv.Mat();
+    cv.resize(src, work, new cv.Size(W, H), 0, 0, cv.INTER_AREA);
+    const inv = 1 / scale;
+    const out = [];
+    const cleanup = [work];
+    const done = () => { cleanup.forEach((m) => m.delete()); return out; };
+
+    const rgb = new cv.Mat(); cv.cvtColor(work, rgb, cv.COLOR_RGBA2RGB);
+    const hsv = new cv.Mat(); cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+    cleanup.push(rgb, hsv);
+    // Cube = dominant highly-saturated region (skin/wood/desk are duller).
+    const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 120, 50, 0]);
+    const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 0]);
+    const mask = new cv.Mat(); cv.inRange(hsv, lo, hi, mask);
+    cleanup.push(lo, hi, mask);
+    cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(15, 15)));
+    cv.morphologyEx(mask, mask, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(9, 9)));
+
+    const cnts = new cv.MatVector(); const hier = new cv.Mat();
+    cv.findContours(mask, cnts, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    cleanup.push(cnts, hier);
+    let best = -1, bestA = 0;
+    for (let i = 0; i < cnts.size(); i++) { const a = cv.contourArea(cnts.get(i)); if (a > bestA) { bestA = a; best = i; } }
+    if (best < 0 || bestA < W * H * 0.03) return done();
+
+    const hull = new cv.Mat(); cv.convexHull(cnts.get(best), hull, false, true);
+    cleanup.push(hull);
+    const peri = cv.arcLength(hull, true);
+    // adaptively pick an epsilon giving 4 or 6 corners
+    let V = null;
+    for (const eps of [0.02, 0.03, 0.04, 0.05, 0.06, 0.08]) {
+      const ap = new cv.Mat(); cv.approxPolyDP(hull, ap, eps * peri, true);
+      const n = ap.rows;
+      if (n === 4 || n === 6) {
+        V = []; for (let i = 0; i < n; i++) V.push({ x: ap.data32S[i * 2], y: ap.data32S[i * 2 + 1] });
+        ap.delete(); break;
+      }
+      ap.delete();
+    }
+    if (!V) return done();
+
+    const toFull = (q) => q.map((p) => ({ x: p.x * inv, y: p.y * inv }));
+    const hd = hsv.data;
+    const darkAlong = (a, b) => {
+      let s = 0, n = 0; const st = Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y)) | 0;
+      for (let i = 0; i <= st; i++) { const t = st ? i / st : 0, x = (a.x + (b.x - a.x) * t) | 0, y = (a.y + (b.y - a.y) * t) | 0; if (x < 0 || y < 0 || x >= W || y >= H) continue; s += hd[(y * W + x) * 3 + 2]; n++; }
+      return n ? s / n : 255;
+    };
+
+    if (V.length === 4) {
+      const quad = toFull(V);
+      const face = readFaceQuad(cv, src, quad);
+      out.push({ face, corners: quad, stickerCount: 4, method: "geometric-1face", cluster: [] });
+      return done();
+    }
+
+    // 6 corners → three faces. C ≈ intersection of the main diagonals.
+    const i1 = lineIntersect(V[0], V[3], V[1], V[4]);
+    const i2 = lineIntersect(V[1], V[4], V[2], V[5]);
+    const i3 = lineIntersect(V[0], V[3], V[2], V[5]);
+    if (!i1 || !i2 || !i3) return done();
+    const C = { x: (i1.x + i2.x + i3.x) / 3, y: (i1.y + i2.y + i3.y) / 3 };
+    // side vertices = the alternating set whose edges-from-C are darker (= real seams)
+    const evenDark = (darkAlong(C, V[0]) + darkAlong(C, V[2]) + darkAlong(C, V[4])) / 3;
+    const oddDark = (darkAlong(C, V[1]) + darkAlong(C, V[3]) + darkAlong(C, V[5])) / 3;
+    const sideStart = evenDark <= oddDark ? 0 : 1;
+    for (let k = 0; k < 3; k++) {
+      const a = (sideStart + 2 * k) % 6, b = (a + 1) % 6, c = (a + 2) % 6;
+      const quad = toFull([C, V[a], V[b], V[c]]);
+      const face = readFaceQuad(cv, src, quad);
+      out.push({ face, corners: quad, stickerCount: 9, method: "geometric-3face", cluster: [] });
+    }
+    return done();
+  }
+
+  return { detectCube, detectFaces, detectFacesGeometric, readFaceQuad, sampleQuad, orderCorners, classifyColor, sampleGrid, cellColor, findStickerSquares, clusterStickers, findColorAnchors, pickCubeCluster, squaredBBox, fitGrid, splitByOrientation, COLORS, WORK_WIDTH };
 });
