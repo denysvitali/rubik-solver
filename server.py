@@ -12,12 +12,27 @@ import http.server
 import socketserver
 import time
 import os
+import urllib.request
 
 PORT = 8085
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # Files whose <script>/<link> refs get a fresh version token each page load.
 BUSTED = ("detector.js", "app.js")
+
+# Sample image: fetched server-side from the clean origin URL (no binary is
+# committed to the repo, and no third-party image proxy is used) and served
+# same-origin so the canvas isn't CORS-tainted when we read its pixels.
+SAMPLE_URL = "https://www.wfmt.com/wp-content/uploads/2023/02/rubiks.jpg"
+_sample_cache = None
+
+
+def fetch_sample():
+    global _sample_cache
+    if _sample_cache is None:
+        req = urllib.request.Request(SAMPLE_URL, headers={"User-Agent": "Mozilla/5.0"})
+        _sample_cache = urllib.request.urlopen(req, timeout=20).read()
+    return _sample_cache
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -34,7 +49,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             return self._serve_index()
+        if path == "/sample.jpg":
+            return self._serve_sample()
         return super().do_GET()
+
+    def _serve_sample(self):
+        try:
+            body = fetch_sample()
+        except Exception as exc:  # network error → 502 so the UI can report it
+            self.send_error(502, f"Could not fetch sample image: {exc}")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_index(self):
         token = f"{int(time.time())}-{os.getpid()}"

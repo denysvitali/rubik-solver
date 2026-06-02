@@ -1,7 +1,16 @@
-node_modules
+# dependencies
+node_modules/
+
+# binaries / large vendored assets (never commit)
 opencv.js
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+
+# test/debug output
 shot*.png
 crop.jpg
 mask*.jpg
 detected.jpg
-test2.jpg
