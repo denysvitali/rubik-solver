@@ -235,18 +235,26 @@
     full.delete();
 
     lastFace = result.face;
-    const ds = overlay.width / srcImg.naturalWidth; // display scale (full → canvas)
-    drawOverlay(result.cluster, result.face, ds);
+    const ds = overlay.width / srcImg.naturalWidth;
+
+    if (result.method === "grid" && result.corners) {
+      drawPerspectiveOverlay(result.corners, result.cluster, ds);
+    } else {
+      drawOverlay(result.cluster, result.face, ds);
+    }
     renderFaces(result.face);
     renderLegend();
 
+    const regionInfo = result.region
+      ? `\nface region: ${Math.round(result.region.w)}x${Math.round(result.region.h)} @(${Math.round(result.region.x)},${Math.round(result.region.y)})`
+      : `\nface: perspective-correct corners`;
     diag.textContent =
       `source: ${srcImg.naturalWidth}x${srcImg.naturalHeight}` +
       `\nwork: ${result.workSize.w}x${result.workSize.h} (fixed)` +
       `\nmethod: ${result.method}` +
       `\nvivid squares: ${result.squareCount}` +
       `\nface stickers: ${result.stickerCount}` +
-      `\nface region: ${Math.round(result.region.w)}x${Math.round(result.region.h)} @(${Math.round(result.region.x)},${Math.round(result.region.y)})` +
+      regionInfo +
       (result.confident ? "" : "\n(low confidence — center crop)");
   }
 
@@ -270,6 +278,36 @@
         ctx.beginPath(); ctx.moveTo(x + (w / 3) * i, y); ctx.lineTo(x + (w / 3) * i, y + h); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(x, y + (h / 3) * i); ctx.lineTo(x + w, y + (h / 3) * i); ctx.stroke();
       }
+    }
+  }
+
+  // Perspective-correct overlay: draw the detected stickers and the face quad.
+  function drawPerspectiveOverlay(corners, cluster, ds) {
+    drawBase();
+    const ctx = overlay.getContext("2d");
+    // Draw detected sticker boxes
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(79,140,255,0.9)";
+    for (const s of cluster) {
+      ctx.strokeRect(s.rect.x * ds, s.rect.y * ds, s.rect.width * ds, s.rect.height * ds);
+    }
+    // Draw the face quadrilateral
+    const c = corners.map((p) => ({ x: p.x * ds, y: p.y * ds }));
+    ctx.strokeStyle = "rgba(95,217,127,0.95)";
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    c.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+    ctx.closePath(); ctx.stroke();
+    // Perspective 3x3 grid via edge interpolation
+    const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    ctx.strokeStyle = "rgba(95,217,127,0.55)";
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 3; i++) {
+      const t = i / 3;
+      const top = lerp(c[0], c[1], t), bot = lerp(c[3], c[2], t);
+      ctx.beginPath(); ctx.moveTo(top.x, top.y); ctx.lineTo(bot.x, bot.y); ctx.stroke();
+      const left = lerp(c[0], c[3], t), right = lerp(c[1], c[2], t);
+      ctx.beginPath(); ctx.moveTo(left.x, left.y); ctx.lineTo(right.x, right.y); ctx.stroke();
     }
   }
 
