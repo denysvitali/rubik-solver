@@ -94,6 +94,53 @@
     return { cells, detected };
   }
 
+  // Detect ALL vivid, solid, square stickers (any hue). Robust on clean cubes
+  // where most of the 9 stickers are clearly bounded by black borders.
+  function findStickerSquares(cv, mat, imgArea) {
+    const rgb = new cv.Mat(); cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
+    const hsv = new cv.Mat(); cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+    const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 90, 60, 0]);
+    const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 0]);
+    const mask = new cv.Mat(); cv.inRange(hsv, lo, hi, mask);
+    const k = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+    cv.morphologyEx(mask, mask, cv.MORPH_OPEN, k);
+    cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, k);
+    const cnts = new cv.MatVector(); const hier = new cv.Mat();
+    cv.findContours(mask, cnts, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    const st = [];
+    for (let i = 0; i < cnts.size(); i++) {
+      const c = cnts.get(i); const area = cv.contourArea(c); const r = cv.boundingRect(c);
+      const ar = r.width / r.height, fill = area / (r.width * r.height);
+      if (area > imgArea * 0.0008 && area < imgArea * 0.04 && ar > 0.6 && ar < 1.7 && fill > 0.62) {
+        st.push({ cx: r.x + r.width / 2, cy: r.y + r.height / 2, side: (r.width + r.height) / 2, rect: r });
+      }
+      c.delete();
+    }
+    rgb.delete(); hsv.delete(); lo.delete(); hi.delete(); mask.delete(); k.delete(); cnts.delete(); hier.delete();
+    return st;
+  }
+
+  // Cluster by proximity, optionally requiring similar sizes (for real
+  // sticker squares that should all be about the same size).
+  function clusterStickers(items, sizeSimilar) {
+    const n = items.length;
+    if (!n) return [];
+    const sides = items.map((s) => s.side).sort((a, b) => a - b);
+    const med = sides[n >> 1] || 20;
+    const par = items.map((_, i) => i);
+    const find = (x) => { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; };
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const a = items[i], b = items[j], bg = Math.max(a.side, b.side);
+        const ok = !sizeSimilar || Math.min(a.side, b.side) / bg > 0.55;
+        if (ok && Math.hypot(a.cx - b.cx, a.cy - b.cy) < bg * (sizeSimilar ? 1.8 : 4)) par[find(i)] = find(j);
+      }
+    }
+    const g = {};
+    items.forEach((s, i) => { const r = find(i); (g[r] = g[r] || []).push(s); });
+    return Object.values(g).sort((a, b) => b.length - a.length);
+  }
+
   // Green+blue blobs — hues absent from skin/brick/wood/paper backgrounds.
   function findColorAnchors(cv, mat, imgArea) {
     const rgb = new cv.Mat();
@@ -146,13 +193,13 @@
     return Object.values(groups).sort((a, b) => b.length - a.length)[0];
   }
 
-  function squaredBBox(cluster, W, H) {
+  function squaredBBox(cluster, W, H, pad) {
+    if (pad == null) pad = 0.10;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const a of cluster) {
       minX = Math.min(minX, a.rect.x); minY = Math.min(minY, a.rect.y);
       maxX = Math.max(maxX, a.rect.x + a.rect.width); maxY = Math.max(maxY, a.rect.y + a.rect.height);
     }
-    const pad = 0.10;
     const rw = (maxX - minX) * (1 + 2 * pad), rh = (maxY - minY) * (1 + 2 * pad);
     const cX = (minX + maxX) / 2, cY = (minY + maxY) / 2;
     const sz = Math.max(rw, rh);
@@ -173,12 +220,31 @@
     cv.resize(src, work, new cv.Size(W, H), 0, 0, cv.INTER_AREA);
     const imgArea = W * H;
 
-    const anchors = findColorAnchors(cv, work, imgArea);
-    const cluster = pickCubeCluster(anchors);
+    // Method A — all vivid sticker squares + grid. Robust on clean cubes:
+    // most of the 9 stickers are found, so the bounding box is stable even if
+    // a couple of stickers drop in/out across browsers' JPEG decoding.
+    const squares = findStickerSquares(cv, work, imgArea);
+    const sqClusters = clusterStickers(squares, true);
+    const sqBest = sqClusters[0] || [];
 
-    let regionW, confident;
-    if (cluster && cluster.length) { regionW = squaredBBox(cluster, W, H); confident = true; }
-    else { regionW = { x: W * 0.2, y: H * 0.2, w: W * 0.6, h: H * 0.6 }; confident = false; }
+    // Method B — green/blue anchors. Fallback for small cubes on busy/warm
+    // backgrounds (brick, wood) where Method A can't isolate clean squares.
+    let method, regionW, confident, overlayBoxes;
+    if (sqBest.length >= 5) {
+      regionW = squaredBBox(sqBest, W, H, 0.04); // stickers already span the face
+      confident = true; method = "stickers"; overlayBoxes = sqBest;
+    } else {
+      const anchors = findColorAnchors(cv, work, imgArea);
+      const cluster = pickCubeCluster(anchors);
+      if (cluster && cluster.length) {
+        regionW = squaredBBox(cluster, W, H, 0.10);
+        confident = true; method = "green/blue"; overlayBoxes = cluster;
+      } else {
+        regionW = { x: W * 0.2, y: H * 0.2, w: W * 0.6, h: H * 0.6 };
+        confident = false; method = "center-crop"; overlayBoxes = [];
+      }
+    }
+    const stickerCount = overlayBoxes.length;
 
     // Sample colors on the work image (already at processing resolution).
     const face = sampleGrid(work, regionW, confident);
@@ -186,20 +252,21 @@
     // Scale geometry back to full-resolution coordinates for the overlay.
     const inv = 1 / scale;
     const region = { x: regionW.x * inv, y: regionW.y * inv, w: regionW.w * inv, h: regionW.h * inv };
-    const clusterSrc = (cluster || []).map((a) => ({
+    const clusterSrc = overlayBoxes.map((a) => ({
       rect: { x: a.rect.x * inv, y: a.rect.y * inv, width: a.rect.width * inv, height: a.rect.height * inv },
     }));
     face.region = region;
-    face.stickerCount = cluster ? cluster.length : 0;
+    face.stickerCount = stickerCount;
     work.delete();
 
     return {
-      face, region, confident,
+      face, region, confident, method,
       cluster: clusterSrc,
-      anchorCount: anchors.length,
+      stickerCount,
+      squareCount: squares.length,
       workSize: { w: W, h: H },
     };
   }
 
-  return { detectCube, classifyColor, sampleGrid, cellColor, findColorAnchors, pickCubeCluster, squaredBBox, COLORS, WORK_WIDTH };
+  return { detectCube, classifyColor, sampleGrid, cellColor, findStickerSquares, clusterStickers, findColorAnchors, pickCubeCluster, squaredBBox, COLORS, WORK_WIDTH };
 });

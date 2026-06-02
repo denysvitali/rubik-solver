@@ -18,7 +18,7 @@ const src = cv.matFromImageData({ data: img.data, width: W, height: H });
 const result = RubikDetector.detectCube(cv, src);
 src.delete();
 
-console.log(`${FILE} @${W}x${H}  work=${result.workSize.w}x${result.workSize.h}  anchors=${result.anchorCount}  cluster=${result.face.stickerCount}  confident=${result.confident}`);
+console.log(`${FILE} @${W}x${H}  work=${result.workSize.w}x${result.workSize.h}  method=${result.method}  squares=${result.squareCount}  faceStickers=${result.stickerCount}`);
 console.log(`region ${result.region.w | 0}x${result.region.h | 0} @(${result.region.x | 0},${result.region.y | 0})`);
 for (let i = 0; i < 9; i += 3) console.log("  " + result.face.cells.slice(i, i + 3).map((c) => c.code).join(" "));
 

@@ -131,10 +131,11 @@
     diag.textContent =
       `source: ${srcImg.naturalWidth}x${srcImg.naturalHeight}` +
       `\nwork: ${result.workSize.w}x${result.workSize.h} (fixed)` +
-      `\ngreen/blue anchors: ${result.anchorCount}` +
-      `\ncube cluster: ${result.face.stickerCount}` +
+      `\nmethod: ${result.method}` +
+      `\nvivid squares: ${result.squareCount}` +
+      `\nface stickers: ${result.stickerCount}` +
       `\nface region: ${Math.round(result.region.w)}x${Math.round(result.region.h)} @(${Math.round(result.region.x)},${Math.round(result.region.y)})` +
-      (result.confident ? "" : "\n(no green/blue found — center crop, low confidence)");
+      (result.confident ? "" : "\n(low confidence — center crop)");
   }
 
   // ---- Overlay drawing (coords are full-res; scale to the display canvas) ----
@@ -180,8 +181,8 @@
     head.className = "face-head";
     const h = document.createElement("h3");
     h.textContent = face.detected
-      ? `Detected face — located via ${face.stickerCount ?? 0} green/blue anchor(s)`
-      : `Face (center crop — no green/blue found, low confidence)`;
+      ? `Detected face — located via ${face.stickerCount ?? 0} sticker(s)`
+      : `Face (center crop — low confidence)`;
     const copyBtn = document.createElement("button");
     copyBtn.className = "btn secondary copy-btn";
     copyBtn.textContent = "Copy";
