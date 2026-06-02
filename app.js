@@ -47,8 +47,8 @@
     if (v < 0.15) return "W"; // near-black: default, avoids misclassifying
 
     if (h < 16 || h >= 330) return "R";
-    if (h < 45) return "O";   // orange
-    if (h < 70) return "Y";   // yellow
+    if (h < 40) return "O";   // orange (cube orange sits near 15-30°)
+    if (h < 70) return "Y";   // yellow (~45-60°)
     if (h < 175) return "G";  // green
     if (h < 265) return "B";  // blue
     return "R";               // magenta wraps back to red
@@ -284,7 +284,7 @@
     return { x, y, w: sz, h: sz };
   }
 
-  // Sample a 3x3 grid of average colors from a rectangular region.
+  // Sample a 3x3 grid of sticker colors from a rectangular region.
   function sampleGrid(srcMat, region, detected) {
     const cells = [];
     const cw = region.w / 3, ch = region.h / 3;
@@ -292,26 +292,51 @@
       for (let gx = 0; gx < 3; gx++) {
         const cx = region.x + cw * (gx + 0.5);
         const cy = region.y + ch * (gy + 0.5);
-        // sample a small patch (40% of cell) and average
-        const px = Math.max(3, Math.floor(cw * 0.2));
-        const py = Math.max(3, Math.floor(ch * 0.2));
-        let r = 0, g = 0, b = 0, n = 0;
-        for (let yy = Math.floor(cy - py); yy < cy + py; yy++) {
-          for (let xx = Math.floor(cx - px); xx < cx + px; xx++) {
-            if (xx < 0 || yy < 0 || xx >= srcMat.cols || yy >= srcMat.rows) continue;
-            const idx = (yy * srcMat.cols + xx) * 4;
-            r += srcMat.data[idx];
-            g += srcMat.data[idx + 1];
-            b += srcMat.data[idx + 2];
-            n++;
-          }
-        }
-        if (n > 0) { r /= n; g /= n; b /= n; }
+        const [r, g, b] = cellColor(srcMat, cx, cy, Math.max(4, cw * 0.28), Math.max(4, ch * 0.28));
         const code = classifyColor(r, g, b);
         cells.push({ code, rgb: [Math.round(r), Math.round(g), Math.round(b)], cx, cy });
       }
     }
     return { cells, detected };
+  }
+
+  // Representative color of one cell. Stickers are vivid; fingers covering a
+  // sticker, shadows and gridlines are duller. We keep only vivid pixels
+  // (high saturation), bin them by hue (plus a white bin for bright-but-pale
+  // pixels), and average the dominant bin — so a sticker shows through even
+  // when a finger covers part of it. Falls back to a plain average for a
+  // genuinely pale/white cell that has few vivid pixels.
+  function cellColor(srcMat, cx, cy, hx, hy) {
+    const px = [];
+    for (let y = Math.floor(cy - hy); y < cy + hy; y++) {
+      for (let x = Math.floor(cx - hx); x < cx + hx; x++) {
+        if (x < 0 || y < 0 || x >= srcMat.cols || y >= srcMat.rows) continue;
+        const i = (y * srcMat.cols + x) * 4;
+        const r = srcMat.data[i], g = srcMat.data[i + 1], b = srcMat.data[i + 2];
+        const mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+        let h = 0;
+        if (d) {
+          if (mx === r) h = ((g - b) / d) % 6; else if (mx === g) h = (b - r) / d + 2; else h = (r - g) / d + 4;
+          h = h * 60; if (h < 0) h += 360;
+        }
+        px.push({ r, g, b, h, s: mx === 0 ? 0 : d / mx, v: mx / 255 });
+      }
+    }
+    if (!px.length) return [0, 0, 0];
+    // vivid sticker pixels (s>=0.7); skin (~0.57) and shadow fall below
+    let pool = px.filter((p) => p.s >= 0.7 && p.v >= 0.4);
+    if (pool.length < px.length * 0.05) pool = px; // pale/white cell
+    const bins = {};
+    for (const p of pool) {
+      const key = (p.s < 0.25 && p.v > 0.5) ? "W" : Math.floor(p.h / 30);
+      (bins[key] = bins[key] || []).push(p);
+    }
+    let best = null;
+    for (const k in bins) if (!best || bins[k].length > bins[best].length) best = k;
+    const grp = bins[best];
+    let r = 0, g = 0, b = 0;
+    for (const p of grp) { r += p.r; g += p.g; b += p.b; }
+    return [r / grp.length, g / grp.length, b / grp.length];
   }
 
   // ---- Overlay drawing ----

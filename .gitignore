@@ -1,3 +1,6 @@
 node_modules
 opencv.js
 shot*.png
+crop.jpg
+mask*.jpg
+detected.jpg
