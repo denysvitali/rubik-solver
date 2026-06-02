@@ -218,6 +218,56 @@
       cnt.delete();
     }
 
+    const edgeCount = stickers.length;
+
+    // ---- Color-filter pass ----
+    // Cube stickers are vivid, solid colors. Threshold the HSV saturation/value
+    // to isolate colored regions (paper & white background drop out), then find
+    // square blobs the same way. This anchors directly on neighboring colored
+    // squares rather than relying on clean edges.
+    const rgb = new cv.Mat();
+    cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
+    const hsv = new cv.Mat();
+    cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+    // S >= 70, V >= 60  (H spans full range — any saturated hue)
+    const low = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 70, 60, 0]);
+    const high = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 0]);
+    const mask = new cv.Mat();
+    cv.inRange(hsv, low, high, mask);
+    // close holes (glare/specular) then open to drop thin noise
+    const ck = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, ck);
+    cv.morphologyEx(mask, mask, cv.MORPH_OPEN, ck);
+
+    const cContours = new cv.MatVector();
+    const cHier = new cv.Mat();
+    cv.findContours(mask, cContours, cHier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+    for (let i = 0; i < cContours.size(); i++) {
+      const cnt = cContours.get(i);
+      const area = cv.contourArea(cnt);
+      if (area < imgArea * 0.0008 || area > imgArea * 0.15) { cnt.delete(); continue; }
+      const r = cv.boundingRect(cnt);
+      const ar = r.width / r.height;
+      const fill = area / (r.width * r.height); // how square/solid the blob is
+      if (ar > 0.6 && ar < 1.6 && fill > 0.6) {
+        const col = sampleRectColor(src, r);
+        stickers.push({
+          cx: r.x + r.width / 2,
+          cy: r.y + r.height / 2,
+          area,
+          side: (r.width + r.height) / 2,
+          rect: r,
+          sat: col.sat,
+          rgb: col.rgb,
+          src: "color",
+        });
+      }
+      cnt.delete();
+    }
+    const colorCount = stickers.length - edgeCount;
+    rgb.delete(); hsv.delete(); low.delete(); high.delete();
+    mask.delete(); ck.delete(); cContours.delete(); cHier.delete();
+
     // Deduplicate overlapping detections (nested contours of same sticker)
     const dedup = [];
     stickers.sort((a, b) => b.area - a.area);
@@ -231,7 +281,8 @@
     }
 
     diag.textContent =
-      `image: ${W}x${H}\ncandidate quads: ${stickers.length}\nunique stickers: ${dedup.length}`;
+      `image: ${W}x${H}\nedge quads: ${edgeCount}\ncolor blobs: ${colorCount}` +
+      `\nunique stickers: ${dedup.length}`;
 
     const faces = buildFaces(dedup, src);
 
