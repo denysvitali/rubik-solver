@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Rubik's Cube Detector</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #181b22;
+    --panel2: #1f2430;
+    --accent: #4f8cff;
+    --text: #e6e9ef;
+    --muted: #9aa3b2;
+    --border: #2a2f3a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+  header {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  header h1 { font-size: 20px; margin: 0; }
+  header .cube-ico { font-size: 26px; }
+  header .status {
+    margin-left: auto;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  header .status.ready { color: #5fd97f; }
+  main {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 24px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+  }
+  .panel h2 { margin: 0 0 12px; font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .drop {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    padding: 28px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+  }
+  .drop:hover, .drop.drag { border-color: var(--accent); background: var(--panel2); }
+  .drop p { margin: 6px 0; color: var(--muted); font-size: 14px; }
+  input[type=file] { display: none; }
+  .btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-size: 14px;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+  canvas, #srcImg {
+    max-width: 100%;
+    border-radius: 8px;
+    display: block;
+  }
+  #canvasWrap { position: relative; margin-top: 12px; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .faces { display: flex; flex-direction: column; gap: 18px; }
+  .face-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+  .face-card h3 { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+  .grid3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    width: 168px;
+  }
+  .cell {
+    aspect-ratio: 1;
+    border-radius: 6px;
+    border: 2px solid rgba(0,0,0,.35);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+    position: relative;
+  }
+  .cell .lbl {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; color: rgba(0,0,0,.55);
+  }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; border: 1px solid rgba(255,255,255,.2); }
+  .empty { color: var(--muted); font-size: 14px; padding: 20px 0; text-align: center; }
+  .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--border); border-top-color: var(--accent); border-radius:50%; animation: spin .7s linear infinite; vertical-align:-2px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  pre { background: #0b0d11; padding: 10px; border-radius: 8px; overflow:auto; font-size: 11px; color: var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <span class="cube-ico">🧊</span>
+  <h1>Rubik's Cube Detector</h1>
+  <span class="status" id="status">Loading OpenCV…</span>
+</header>
+<main>
+  <section class="panel">
+    <h2>Input</h2>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept="image/*" />
+      <p style="font-size:30px;margin:0">🖼️</p>
+      <p><strong>Click or drop a cube photo</strong></p>
+      <p>or use the sample image</p>
+    </label>
+    <div class="row">
+      <button class="btn secondary" id="sampleBtn">Load sample</button>
+      <button class="btn" id="detectBtn" disabled>Detect cube</button>
+    </div>
+    <div id="canvasWrap">
+      <canvas id="overlay"></canvas>
+    </div>
+    <p class="hint">Detection finds the cube's 3×3 grid via contour analysis, then samples each sticker's color (HSV classification into the 6 standard colors).</p>
+    <details>
+      <summary>Diagnostics</summary>
+      <pre id="diag">—</pre>
+    </details>
+  </section>
+
+  <section class="panel">
+    <h2>Detected Face(s)</h2>
+    <div id="faces" class="faces">
+      <div class="empty">No cube detected yet. Load an image and press <strong>Detect cube</strong>.</div>
+    </div>
+    <div class="legend" id="legend"></div>
+  </section>
+</main>
+
+<script src="opencv.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
