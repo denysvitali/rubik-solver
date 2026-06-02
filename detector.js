@@ -746,21 +746,39 @@
     if (!corners) return done();
     const N = corners.length;
 
-    // Refine corners: fit a line to each silhouette edge (the hull points
-    // between consecutive approx corners), intersect adjacent fitted lines.
-    const idx = corners.map((c) => { let bi = 0, bd = Infinity; hull.forEach((h, i) => { const d = (h.x - c.x) ** 2 + (h.y - c.y) ** 2; if (d < bd) { bd = d; bi = i; } }); return bi; });
-    const fitEdge = (i0, i1) => {
-      const pts = []; let i = i0; for (let g = 0; g < hull.length; g++) { pts.push(hull[i]); if (i === i1) break; i = (i + 1) % hull.length; }
-      if (pts.length < 2) return null;
+    // Refine corners by SNAPPING each silhouette edge to the true cube
+    // boundary: the saturation-mask edge sits a few px off the real edge, so
+    // for points along each rough edge we search perpendicular for the peak
+    // intensity gradient (the high-contrast cube/background boundary) and fit a
+    // robust line through those peaks; adjacent snapped lines intersect at the
+    // refined corner (gets corners onto the actual cube corners, ~10px fix).
+    const gray = new cv.Mat(); cv.cvtColor(work, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
+    const gx = new cv.Mat(), gy = new cv.Mat(), gm = new cv.Mat();
+    cv.Scharr(gray, gx, cv.CV_32F, 1, 0); cv.Scharr(gray, gy, cv.CV_32F, 0, 1); cv.magnitude(gx, gy, gm);
+    cleanup.push(gray, gx, gy, gm);
+    const gmd = gm.data32F;
+    const gAt = (x, y) => { x |= 0; y |= 0; if (x < 0 || y < 0 || x >= W || y >= H) return 0; return gmd[y * W + x]; };
+    const snapEdge = (A, B) => {
+      const dx = B.x - A.x, dy = B.y - A.y, L = Math.hypot(dx, dy) || 1;
+      const nx = -dy / L, ny = dx / L; // perpendicular
+      const pts = [], NS = 24, RANGE = 20;
+      for (let s = 1; s < NS; s++) {
+        const t = s / NS, px = A.x + dx * t, py = A.y + dy * t;
+        let bestG = -1, bo = 0;
+        for (let o = -RANGE; o <= RANGE; o++) { const g = gAt(px + nx * o, py + ny * o); if (g > bestG) { bestG = g; bo = o; } }
+        if (bestG > 20) pts.push({ x: px + nx * bo, y: py + ny * bo });
+      }
+      if (pts.length < 4) return null;
       const m = cv.matFromArray(pts.length, 1, cv.CV_32FC2, pts.flatMap((p) => [p.x, p.y]));
-      const ln = new cv.Mat(); cv.fitLine(m, ln, cv.DIST_L2, 0, 0.01, 0.01);
+      const ln = new cv.Mat(); cv.fitLine(m, ln, cv.DIST_HUBER, 0, 0.01, 0.01);
       const r = { d: { x: ln.data32F[0], y: ln.data32F[1] }, p: { x: ln.data32F[2], y: ln.data32F[3] } };
       m.delete(); ln.delete(); return r;
     };
-    const interLine = (a, b) => { const den = a.d.x * b.d.y - a.d.y * b.d.x; if (Math.abs(den) < 1e-9) return null; const t = ((b.p.x - a.p.x) * b.d.y - (b.p.y - a.p.y) * b.d.x) / den; return { x: a.p.x + t * a.d.x, y: a.p.y + t * a.d.y }; };
-    const E = []; for (let i = 0; i < N; i++) E.push(fitEdge(idx[i], idx[(i + 1) % N]));
+    const interLine = (a, b) => { if (!a || !b) return null; const den = a.d.x * b.d.y - a.d.y * b.d.x; if (Math.abs(den) < 1e-9) return null; const t = ((b.p.x - a.p.x) * b.d.y - (b.p.y - a.p.y) * b.d.x) / den; return { x: a.p.x + t * a.d.x, y: a.p.y + t * a.d.y }; };
+    const E = []; for (let i = 0; i < N; i++) E.push(snapEdge(corners[i], corners[(i + 1) % N]));
     const V = [];
-    for (let i = 0; i < N; i++) { const a = E[(i + N - 1) % N], b = E[i]; const v = (a && b) ? interLine(a, b) : null; V.push(v || corners[i]); }
+    for (let i = 0; i < N; i++) { const a = E[(i + N - 1) % N], b = E[i]; const v = interLine(a, b); V.push(v || corners[i]); }
 
     const toFull = (q) => q.map((p) => ({ x: p.x * inv, y: p.y * inv }));
     const hd = hsv.data;
