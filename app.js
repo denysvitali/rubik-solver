@@ -37,6 +37,7 @@
     statusEl.textContent = "OpenCV ready";
     statusEl.classList.add("ready");
     enableActions();
+    ensureModel(); // preload the segmentation model so it's ready at detect time
   }
 
   function waitForCv() {
@@ -133,15 +134,16 @@
   // ---- Neural cube segmentation (onnxruntime-web; u2netp salient model) ----
   // Cleanly isolates the whole cube (incl. white pieces) from hand/background —
   // a far better silhouette seed than colour thresholds. Loaded lazily.
-  let ortSession = null, ortLoading = null;
+  let ortSession = null, ortLoading = null, modelStatus = "idle";
   function ensureModel() {
     if (ortSession) return Promise.resolve(ortSession);
-    if (!window.ort) return Promise.resolve(null);
+    if (!window.ort) { modelStatus = "onnxruntime-web not loaded (ort missing)"; return Promise.resolve(null); }
     if (!ortLoading) {
+      modelStatus = "loading…";
       try { ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/"; } catch (_) {}
       ortLoading = ort.InferenceSession.create("u2netp.onnx")
-        .then((s) => (ortSession = s))
-        .catch((e) => { console.error("cube model load failed", e); return null; });
+        .then((s) => { ortSession = s; modelStatus = "ready"; return s; })
+        .catch((e) => { console.error("cube model load failed", e); modelStatus = "load failed: " + (e && e.message || e); return null; });
     }
     return ortLoading;
   }
@@ -307,6 +309,7 @@
       diag.textContent =
         `source: ${srcImg.naturalWidth}x${srcImg.naturalHeight}` +
         `\nmethod: ${geometric ? "auto multi-face (geometric silhouette)" : "auto multi-face (sticker grid)"}` +
+        (geometric ? `\nsilhouette: ${faces[0].silhouette || "?"}  |  model: ${modelStatus}` : "") +
         `\nfaces detected: ${faces.length}` +
         faces.map((f, i) => `\n  face ${i + 1}: ${f.method || "grid"}`).join("") +
         (wireframe ? "\n→ drag the 7 dots to refine the fit" : "");

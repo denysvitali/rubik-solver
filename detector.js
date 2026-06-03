@@ -846,13 +846,14 @@
     const V = [];
     for (let i = 0; i < N; i++) { const a = E[(i + N - 1) % N], b = E[i]; const v = interLine(a, b); V.push(v || corners[i]); }
 
+    const silhouette = usedModel ? "neural" : (gcOK ? "grabcut" : "threshold");
     const toFull = (q) => q.map((p) => ({ x: p.x * inv, y: p.y * inv }));
     const hd = hsv.data;
     const darkAlong = (a, b) => { let s = 0, n = 0; const st = Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y)) | 0; for (let i = 0; i <= st; i++) { const t = st ? i / st : 0, x = (a.x + (b.x - a.x) * t) | 0, y = (a.y + (b.y - a.y) * t) | 0; if (x < 0 || y < 0 || x >= W || y >= H) continue; s += hd[(y * W + x) * 3 + 2]; n++; } return n ? s / n : 255; };
 
     if (N === 4) {
       const quad = toFull(V);
-      out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 4, method: "geometric-1face", cluster: [] });
+      out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 4, method: "geometric-1face", cluster: [], silhouette });
       return done();
     }
 
@@ -880,7 +881,7 @@
     for (let k = 0; k < 3; k++) {
       const a = (sideStart + 2 * k) % 6, b = (a + 1) % 6, c = (a + 2) % 6;
       const quad = [nearFull, ringFull[a], ringFull[b], ringFull[c]];
-      out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 9, method: P ? "geometric-pnp" : "geometric-3face", cluster: [], wireframe });
+      out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 9, method: P ? "geometric-pnp" : "geometric-3face", cluster: [], wireframe, silhouette });
     }
     return done();
   }
