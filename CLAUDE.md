@@ -23,6 +23,12 @@ node test/quad.mjs <image.jpg> x1 y1 x2 y2 x3 y3 x4 y4
 
 # Full pipeline test: ONNX segmentation → geometric detector
 node test/full.mjs <image.jpg>
+
+# Verify alternation scoring (axis-aligned vs diagonal gradient energy)
+node test/altcheck.mjs <image.jpg>
+
+# Face warp montage: ONNX → geometric → warped face output
+node test/faceswarp.mjs <image.jpg>
 ```
 
 No `npm test` wired up. No linter configured.
@@ -42,6 +48,8 @@ No `npm test` wired up. No linter configured.
 - `harness.mjs` — Puppeteer-driven browser test (needs server.py running)
 - `quad.mjs` — manual perspective sampler test
 - `full.mjs` — ONNX segmentation + geometric detection pipeline
+- `altcheck.mjs` — verifies alternation scoring (axis-aligned vs diagonal gradient energy)
+- `faceswarp.mjs` — ONNX segmentation → geometric detection → warped face montage
 
 ## Detection Pipeline
 
@@ -52,7 +60,7 @@ No `npm test` wired up. No linter configured.
 3. **Green/blue anchors (Method 3)** — find green+blue blobs (absent from skin/brick/wood backgrounds), cluster, bounding box.
 4. **Center crop (Method 4)** — last resort, low confidence.
 
-`detectFacesGeometric()` — for glossy/stickerless/borderless cubes where per-sticker segmentation fails. Segments the cube as one saturated silhouette (via neural model → GrabCut → threshold fallback), approximates to 4-corner (single face) or 6-corner (three faces) polygon, snaps edges to gradient peaks, solves PnP pose for the near-corner, perspective-warps each face quad.
+`detectFacesGeometric()` — for glossy/stickerless/borderless cubes where per-sticker segmentation fails. Segments the cube as one saturated silhouette (via neural model → GrabCut → threshold fallback), approximates to 4-corner (single face) or 6-corner (three faces) polygon, snaps edges to gradient peaks, solves PnP pose for the near-corner, perspective-warps each face quad. For 6-corner (three-face) case, picks correct side/outer alternation via gradient-energy scoring (`altScore()`): correct decomposition yields axis-aligned sticker edges in warped faces; wrong one rotates stickers ~45°.
 
 `detectFaces()` — multi-face: clusters all stickers, tries `fitGrid()` on each cluster, splits merged clusters.
 
