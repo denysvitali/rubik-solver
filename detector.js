@@ -790,37 +790,48 @@
       return done();
     }
 
-    // 6 corners → three faces. Solve the true PERSPECTIVE camera pose (PnP)
-    // from the 6 silhouette corners ↔ a canonical cube's 6 silhouette vertices,
-    // then project all 8 corners. This recovers the near-corner & faces under
-    // real perspective (affine heuristics collapse the near-corner to the cube
-    // center on tilted views). Falls back to affine if PnP fails.
+    // 6 corners → three faces. Use the ACCURATE edge-snapped silhouette corners
+    // V as the outer ring (they hug the real cube), and solve only the
+    // near-corner: PnP gives the perspective-correct near-corner; if PnP fails
+    // fall back to the affine diagonal intersection. Faces are [near, side,
+    // outer, side] over the snapped ring — so the wireframe hugs the cube
+    // instead of drifting with the full PnP reprojection.
+    let nearW = null;
     const P = solveCubePose(cv, V, W, H);
-    if (P) {
-      // faces meeting at the near corner (idx0): X+ [0,1,2,3], Y+ [0,1,5,4], Z+ [0,3,7,4]
-      const faceIdx = [[0, 1, 2, 3], [0, 1, 5, 4], [0, 3, 7, 4]];
-      for (const fi of faceIdx) {
-        const quad = toFull(fi.map((i) => P[i]));
-        out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 9, method: "geometric-pnp", cluster: [] });
-      }
-      return done();
+    if (P) nearW = P[0];
+    if (!nearW) {
+      const i1 = lineIntersect(V[0], V[3], V[1], V[4]);
+      const i2 = lineIntersect(V[1], V[4], V[2], V[5]);
+      const i3 = lineIntersect(V[0], V[3], V[2], V[5]);
+      if (!i1 || !i2 || !i3) return done();
+      nearW = { x: (i1.x + i2.x + i3.x) / 3, y: (i1.y + i2.y + i3.y) / 3 };
     }
-
-    // Fallback: affine near-corner = intersection of main diagonals.
-    const i1 = lineIntersect(V[0], V[3], V[1], V[4]);
-    const i2 = lineIntersect(V[1], V[4], V[2], V[5]);
-    const i3 = lineIntersect(V[0], V[3], V[2], V[5]);
-    if (!i1 || !i2 || !i3) return done();
-    const C = { x: (i1.x + i2.x + i3.x) / 3, y: (i1.y + i2.y + i3.y) / 3 };
-    const evenDark = (darkAlong(C, V[0]) + darkAlong(C, V[2]) + darkAlong(C, V[4])) / 3;
-    const oddDark = (darkAlong(C, V[1]) + darkAlong(C, V[3]) + darkAlong(C, V[5])) / 3;
+    const evenDark = (darkAlong(nearW, V[0]) + darkAlong(nearW, V[2]) + darkAlong(nearW, V[4])) / 3;
+    const oddDark = (darkAlong(nearW, V[1]) + darkAlong(nearW, V[3]) + darkAlong(nearW, V[5])) / 3;
     const sideStart = evenDark <= oddDark ? 0 : 1;
+    const ringFull = toFull(V), nearFull = toFull([nearW])[0];
+    const wireframe = { near: nearFull, ring: ringFull, sideStart };
     for (let k = 0; k < 3; k++) {
       const a = (sideStart + 2 * k) % 6, b = (a + 1) % 6, c = (a + 2) % 6;
-      const quad = toFull([C, V[a], V[b], V[c]]);
-      out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 9, method: "geometric-3face", cluster: [] });
+      const quad = [nearFull, ringFull[a], ringFull[b], ringFull[c]];
+      out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 9, method: P ? "geometric-pnp" : "geometric-3face", cluster: [], wireframe });
     }
     return done();
+  }
+
+  // Build the 3 face quads from an editable cube wireframe {near, ring[6],
+  // sideStart}. Used both internally and by the app after the user drags a
+  // corner handle. Returns [{corners, face?}] — pass cv+src to also sample.
+  function facesFromWireframe(cv, src, wf) {
+    const res = [];
+    for (let k = 0; k < 3; k++) {
+      const a = (wf.sideStart + 2 * k) % 6, b = (a + 1) % 6, c = (a + 2) % 6;
+      const quad = [wf.near, wf.ring[a], wf.ring[b], wf.ring[c]];
+      const r = { corners: quad, stickerCount: 9, method: "geometric-3face", cluster: [], wireframe: wf };
+      if (cv && src) r.face = readFaceQuad(cv, src, quad);
+      res.push(r);
+    }
+    return res;
   }
 
   // Solve cube camera pose from 6 ordered silhouette corners (work coords).
@@ -867,5 +878,5 @@
     return result;
   }
 
-  return { detectCube, detectFaces, detectFacesGeometric, readFaceQuad, sampleQuad, orderCorners, classifyColor, sampleGrid, cellColor, findStickerSquares, clusterStickers, findColorAnchors, pickCubeCluster, squaredBBox, fitGrid, splitByOrientation, COLORS, WORK_WIDTH };
+  return { detectCube, detectFaces, detectFacesGeometric, facesFromWireframe, readFaceQuad, sampleQuad, orderCorners, classifyColor, sampleGrid, cellColor, findStickerSquares, clusterStickers, findColorAnchors, pickCubeCluster, squaredBBox, fitGrid, splitByOrientation, COLORS, WORK_WIDTH };
 });

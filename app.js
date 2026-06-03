@@ -22,6 +22,8 @@
   let lastFaces = [];    // all detected faces (multi-face)
   let pickMode = false;  // manual corner-picking active
   let pickPts = [];      // clicked corners in full-resolution coords
+  let wireframe = null;  // editable cube wireframe {near, ring[6], sideStart} (full-res)
+  let dragIdx = null;    // which handle is being dragged: "near" | 0..5
 
   const enableActions = () => {
     const on = cvReady && srcImg;
@@ -60,6 +62,7 @@
     img.onload = () => {
       srcImg = img;
       cancelPick();
+      wireframe = null; dragIdx = null;
       drawBase();
       enableActions();
       statusEl.textContent = cvReady ? "OpenCV ready — image loaded" : "Loading OpenCV…";
@@ -233,6 +236,7 @@
   // ---- Run shared detector, then render ----
   function runDetection() {
     cancelPick();
+    wireframe = null; dragIdx = null;
     const full = fullResMat();
     const ds = overlay.width / srcImg.naturalWidth;
 
@@ -250,14 +254,18 @@
       full.delete();
       lastFaces = faces.map((f) => f.face);
       lastFace = lastFaces[0];
+      wireframe = (geometric && faces[0] && faces[0].wireframe) ? faces[0].wireframe : null;
+      dragIdx = null;
       drawMultiOverlay(faces, ds);
+      if (wireframe) drawHandles(ds);
       renderMultiFaces(faces);
       renderLegend();
       diag.textContent =
         `source: ${srcImg.naturalWidth}x${srcImg.naturalHeight}` +
         `\nmethod: ${geometric ? "auto multi-face (geometric silhouette)" : "auto multi-face (sticker grid)"}` +
         `\nfaces detected: ${faces.length}` +
-        faces.map((f, i) => `\n  face ${i + 1}: ${f.method || "grid"}`).join("");
+        faces.map((f, i) => `\n  face ${i + 1}: ${f.method || "grid"}`).join("") +
+        (wireframe ? "\n→ drag the 7 dots to refine the fit" : "");
       return;
     }
 
@@ -322,6 +330,65 @@
       facesEl.appendChild(buildFaceCard(f.face, `Face ${i + 1} — ${f.stickerCount} stickers`, FACE_COLORS[i % FACE_COLORS.length]));
     });
   }
+
+  // ---- Editable wireframe: drag the 7 handles (near-corner + 6 outer) ----
+  function wfHandles() {
+    return wireframe ? [{ id: "near", p: wireframe.near }, ...wireframe.ring.map((p, i) => ({ id: i, p }))] : [];
+  }
+  function drawHandles(ds) {
+    if (!wireframe) return;
+    const ctx = overlay.getContext("2d");
+    for (const h of wfHandles()) {
+      const x = h.p.x * ds, y = h.p.y * ds;
+      ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
+      ctx.fillStyle = h.id === "near" ? "#ff3b3b" : "#ffffff";
+      ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = "#000"; ctx.stroke();
+    }
+  }
+  function fullPt(e) {
+    const rect = overlay.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) * (overlay.width / rect.width);
+    const cy = (e.clientY - rect.top) * (overlay.height / rect.height);
+    const ds = overlay.width / srcImg.naturalWidth;
+    return { x: cx / ds, y: cy / ds, ds };
+  }
+  function setHandle(id, p) { if (id === "near") wireframe.near = p; else wireframe.ring[id] = p; }
+  // live redraw during drag (geometry only, no re-sampling)
+  function redrawWireframe(ds) {
+    const faces = RubikDetector.facesFromWireframe(null, null, wireframe);
+    drawMultiOverlay(faces, ds);
+    drawHandles(ds);
+  }
+  function resampleWireframe() {
+    const full = fullResMat();
+    const faces = RubikDetector.facesFromWireframe(cv, full, wireframe);
+    full.delete();
+    lastFaces = faces.map((f) => f.face);
+    lastFace = lastFaces[0];
+    const ds = overlay.width / srcImg.naturalWidth;
+    drawMultiOverlay(faces, ds);
+    drawHandles(ds);
+    renderMultiFaces(faces);
+  }
+  overlay.addEventListener("mousedown", (e) => {
+    if (pickMode || !wireframe) return;
+    const { x, y, ds } = fullPt(e);
+    const thresh = 14 / ds; // ~14 display px
+    let bestId = null, bestD = thresh;
+    for (const h of wfHandles()) { const d = Math.hypot(h.p.x - x, h.p.y - y); if (d < bestD) { bestD = d; bestId = h.id; } }
+    if (bestId !== null) { dragIdx = bestId; e.preventDefault(); }
+  });
+  overlay.addEventListener("mousemove", (e) => {
+    if (dragIdx === null || !wireframe) return;
+    const { x, y, ds } = fullPt(e);
+    setHandle(dragIdx, { x, y });
+    redrawWireframe(ds);
+  });
+  window.addEventListener("mouseup", () => {
+    if (dragIdx === null) return;
+    dragIdx = null;
+    try { resampleWireframe(); } catch (err) { console.error(err); }
+  });
 
   // ---- Overlay drawing (coords are full-res; scale to the display canvas) ----
   function drawOverlay(cluster, face, ds) {
