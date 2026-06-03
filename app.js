@@ -61,6 +61,11 @@
 
   // ---- Image loading ----
   function loadImageFromSrc(src) {
+    // Immediate feedback: show a spinner so the user knows something is happening.
+    statusEl.innerHTML = '<span class="spinner"></span> Loading image…';
+    statusEl.classList.remove("ready");
+    detectBtn.disabled = true;
+    pickBtn.disabled = true;
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
@@ -72,7 +77,10 @@
       statusEl.textContent = cvReady ? "OpenCV ready — image loaded" : "Loading OpenCV…";
       statusEl.classList.toggle("ready", cvReady);
     };
-    img.onerror = () => { statusEl.textContent = "Failed to load image"; };
+    img.onerror = () => {
+      statusEl.textContent = "Failed to load image";
+      enableActions();
+    };
     img.src = src;
   }
 
