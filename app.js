@@ -14,6 +14,9 @@
   const facesEl = $("faces");
   const legendEl = $("legend");
   const diag = $("diag");
+  const progressWrap = $("progressWrap");
+  const progressFill = $("progressFill");
+  const progressLabel = $("progressLabel");
 
   const COLORS = RubikDetector.COLORS;
   let cvReady = false;
@@ -125,6 +128,7 @@
         console.error(err);
         statusEl.textContent = "Detection error: " + err.message;
         diag.textContent = String(err.stack || err);
+        hideProgress();
       } finally {
         detectBtn.disabled = false;
       }
@@ -270,6 +274,17 @@
 
   const FACE_COLORS = ["#5fd97f", "#4f8cff", "#ffb43d", "#ff6fd0"];
 
+  // ---- Progress bar helpers ----
+  function showProgress(pct, label) {
+    progressWrap.classList.add("active");
+    progressFill.style.width = pct + "%";
+    progressLabel.textContent = label;
+  }
+  function hideProgress() {
+    progressWrap.classList.remove("active");
+    progressFill.style.width = "0%";
+  }
+
   // ---- Run shared detector, then render ----
   async function runDetection() {
     cancelPick();
@@ -277,24 +292,31 @@
     const full = fullResMat();
     const ds = overlay.width / srcImg.naturalWidth;
 
+    showProgress(10, "Preparing image…");
+    await new Promise((r) => requestAnimationFrame(r)); // let the UI paint
+
     // Primary: sticker-based multi-face (flat-sticker cubes, 1-2 faces).
     // Fallback: top-down geometric (glossy/stickerless/borderless cubes, where
     // per-piece segmentation fails — segments the cube silhouette and splits it
     // into 1 or 3 face quads).
+    showProgress(30, "Searching for sticker grid…");
     const debug = [];
     let faces = RubikDetector.detectFaces(cv, full, { debug });
     let geometric = false;
     if (faces.length === 0) {
       // Neural segmentation for the silhouette (handles glossy/stickerless/
       // white pieces + cluttered background). Falls back internally if absent.
+      showProgress(50, "Segmenting cube (neural model)…");
       let cubeMask = null;
       statusEl.innerHTML = '<span class="spinner"></span> Segmenting cube (model)…';
       try { cubeMask = await segmentCube(full); } catch (e) { console.error("segmentation failed", e); }
+      showProgress(70, "Fitting geometric silhouette…");
       debug.length = 0;
       faces = RubikDetector.detectFacesGeometric(cv, full, { debug, cubeMask });
       if (cubeMask) cubeMask.delete();
       geometric = faces.length > 0;
     }
+    showProgress(90, "Reading face colors…");
     renderDebug(debug);
     if (faces.length > 0) {
       full.delete();
@@ -313,14 +335,17 @@
         `\nfaces detected: ${faces.length}` +
         faces.map((f, i) => `\n  face ${i + 1}: ${f.method || "grid"}`).join("") +
         (wireframe ? "\n→ drag the 7 dots to refine the fit" : "");
+      hideProgress();
       return;
     }
 
     // Fallback: single fronto-parallel face.
+    showProgress(70, "Trying single-face fallback…");
     const result = RubikDetector.detectCube(cv, full);
     full.delete();
     lastFace = result.face;
     lastFaces = [result.face];
+    showProgress(95, "Rendering result…");
 
     if (result.method === "grid" && result.corners) {
       drawPerspectiveOverlay(result.corners, result.cluster, ds);
@@ -341,6 +366,7 @@
       `\nface stickers: ${result.stickerCount}` +
       regionInfo +
       (result.confident ? "" : "\n(low confidence — center crop)");
+    hideProgress();
   }
 
   // Draw every detected face's quad + perspective 3x3 grid, each a distinct color.

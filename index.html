@@ -114,6 +114,30 @@
   .empty { color: var(--muted); font-size: 14px; padding: 20px 0; text-align: center; }
   .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--border); border-top-color: var(--accent); border-radius:50%; animation: spin .7s linear infinite; vertical-align:-2px; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  .progress-wrap { margin-top: 12px; display: none; }
+  .progress-wrap.active { display: block; }
+  .progress-bar-bg {
+    height: 6px;
+    background: var(--panel2);
+    border-radius: 3px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .progress-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width .4s ease;
+  }
+  .progress-label {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
   details { margin-top: 14px; }
   summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   .dbg-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
@@ -145,6 +169,10 @@
     </div>
     <div id="canvasWrap">
       <canvas id="overlay"></canvas>
+      <div class="progress-wrap" id="progressWrap">
+        <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
+        <div class="progress-label"><span class="spinner"></span> <span id="progressLabel">Preparing…</span></div>
+      </div>
     </div>
     <p class="hint">Auto-detect handles flat-sticker cubes (sticker grid) and glossy/stickerless angled cubes (geometric silhouette, up to 3 faces). For angled cubes you can <strong>drag the 7 dots</strong> (near-corner + outer corners) to snap the wireframe onto the cube — faces re-read on release. <strong>Pick corners</strong> is a manual single-face fallback.</p>
     <details>

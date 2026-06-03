@@ -873,10 +873,32 @@
       if (!i1 || !i2 || !i3) return done();
       nearW = { x: (i1.x + i2.x + i3.x) / 3, y: (i1.y + i2.y + i3.y) / 3 };
     }
-    const evenDark = (darkAlong(nearW, V[0]) + darkAlong(nearW, V[2]) + darkAlong(nearW, V[4])) / 3;
-    const oddDark = (darkAlong(nearW, V[1]) + darkAlong(nearW, V[3]) + darkAlong(nearW, V[5])) / 3;
-    const sideStart = evenDark <= oddDark ? 0 : 1;
     const ringFull = toFull(V), nearFull = toFull([nearW])[0];
+    // Choose the side/outer alternation by self-consistency: the CORRECT
+    // decomposition warps each face to a square with axis-aligned (horizontal/
+    // vertical) sticker edges; the wrong one maps a face diagonal to the square
+    // edge and rotates the stickers ~45°. Score = axis-aligned vs diagonal
+    // gradient energy of the warped faces; pick the higher.
+    const altScore = (ss2) => {
+      let tot = 0;
+      for (let k = 0; k < 3; k++) {
+        const a = (ss2 + 2 * k) % 6, b = (a + 1) % 6, c = (a + 2) % 6;
+        const q = [nearFull, ringFull[a], ringFull[b], ringFull[c]];
+        const S = 180;
+        const sT = cv.matFromArray(4, 1, cv.CV_32FC2, [q[0].x, q[0].y, q[1].x, q[1].y, q[2].x, q[2].y, q[3].x, q[3].y]);
+        const dT = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, S, 0, S, S, 0, S]);
+        const M = cv.getPerspectiveTransform(sT, dT); const w = new cv.Mat();
+        cv.warpPerspective(src, w, M, new cv.Size(S, S), cv.INTER_LINEAR, cv.BORDER_REPLICATE, new cv.Scalar());
+        const g = new cv.Mat(); cv.cvtColor(w, g, cv.COLOR_RGBA2GRAY);
+        const gx = new cv.Mat(), gy = new cv.Mat(); cv.Scharr(g, gx, cv.CV_32F, 1, 0); cv.Scharr(g, gy, cv.CV_32F, 0, 1);
+        let axis = 0, diag = 0;
+        for (let i = 0; i < S * S; i++) { const aa = Math.abs(gx.data32F[i]), bb = Math.abs(gy.data32F[i]); axis += Math.abs(aa - bb); diag += Math.min(aa, bb); }
+        tot += axis / (diag + 1);
+        sT.delete(); dT.delete(); M.delete(); w.delete(); g.delete(); gx.delete(); gy.delete();
+      }
+      return tot;
+    };
+    const sideStart = altScore(0) >= altScore(1) ? 0 : 1;
     const wireframe = { near: nearFull, ring: ringFull, sideStart };
     for (let k = 0; k < 3; k++) {
       const a = (sideStart + 2 * k) % 6, b = (a + 1) % 6, c = (a + 2) % 6;
