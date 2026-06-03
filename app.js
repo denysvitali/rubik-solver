@@ -68,27 +68,47 @@
     detectBtn.disabled = true;
     pickBtn.disabled = true;
     canvasWrap.classList.add("loading");
-    const img = new Image();
-    // Only set crossOrigin for absolute HTTP(S) URLs (CDN images). For same-origin
-    // paths (e.g. "sample.jpg") and blob: URLs (file picker), the server may not
-    // send CORS headers and the browser silently aborts the load.
-    if (/^https?:\/\//.test(src)) img.crossOrigin = "anonymous";
-    img.onload = () => {
-      srcImg = img;
-      cancelPick();
-      wireframe = null; dragIdx = null;
-      canvasWrap.classList.remove("loading");
-      drawBase();
-      enableActions();
-      statusEl.textContent = cvReady ? "OpenCV ready — image loaded" : "Loading OpenCV…";
-      statusEl.classList.toggle("ready", cvReady);
+
+    // For file blobs, read via FileReader → data URL (most compatible across browsers).
+    // For remote/same-origin URLs, load directly with Image().
+    const finish = (dataUrl) => {
+      const img = new Image();
+      img.onload = () => {
+        srcImg = img;
+        cancelPick();
+        wireframe = null; dragIdx = null;
+        canvasWrap.classList.remove("loading");
+        drawBase();
+        enableActions();
+        statusEl.textContent = cvReady ? "OpenCV ready — image loaded" : "Loading OpenCV…";
+        statusEl.classList.toggle("ready", cvReady);
+      };
+      img.onerror = () => {
+        canvasWrap.classList.remove("loading");
+        statusEl.textContent = "Failed to load image";
+        enableActions();
+      };
+      img.src = dataUrl;
     };
-    img.onerror = () => {
-      canvasWrap.classList.remove("loading");
-      statusEl.textContent = "Failed to load image";
-      enableActions();
-    };
-    img.src = src;
+
+    if (src.startsWith("blob:")) {
+      fetch(src).then(r => r.blob()).then(blob => {
+        const reader = new FileReader();
+        reader.onload = () => finish(reader.result);
+        reader.onerror = () => {
+          canvasWrap.classList.remove("loading");
+          statusEl.textContent = "Failed to read image";
+          enableActions();
+        };
+        reader.readAsDataURL(blob);
+      }).catch(() => {
+        canvasWrap.classList.remove("loading");
+        statusEl.textContent = "Failed to load image";
+        enableActions();
+      });
+    } else {
+      finish(src);
+    }
   }
 
   // Draw the image into the (display-sized) overlay canvas.
