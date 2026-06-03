@@ -17,6 +17,7 @@
   const progressWrap = $("progressWrap");
   const progressFill = $("progressFill");
   const progressLabel = $("progressLabel");
+  const canvasWrap = $("canvasWrap");
 
   const COLORS = RubikDetector.COLORS;
   let cvReady = false;
@@ -61,23 +62,26 @@
 
   // ---- Image loading ----
   function loadImageFromSrc(src) {
-    // Immediate feedback: show a spinner so the user knows something is happening.
+    // Immediate feedback: show loading state so the user knows something is happening.
     statusEl.innerHTML = '<span class="spinner"></span> Loading image…';
     statusEl.classList.remove("ready");
     detectBtn.disabled = true;
     pickBtn.disabled = true;
+    canvasWrap.classList.add("loading");
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
       srcImg = img;
       cancelPick();
       wireframe = null; dragIdx = null;
+      canvasWrap.classList.remove("loading");
       drawBase();
       enableActions();
       statusEl.textContent = cvReady ? "OpenCV ready — image loaded" : "Loading OpenCV…";
       statusEl.classList.toggle("ready", cvReady);
     };
     img.onerror = () => {
+      canvasWrap.classList.remove("loading");
       statusEl.textContent = "Failed to load image";
       enableActions();
     };

@@ -84,6 +84,19 @@
     display: block;
   }
   #canvasWrap { position: relative; margin-top: 12px; }
+  .canvas-loading {
+    display: none;
+    position: absolute; inset: 0;
+    align-items: center; justify-content: center;
+    background: rgba(15,17,21,0.85);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 15px;
+    gap: 10px;
+    z-index: 10;
+  }
+  #canvasWrap.loading .canvas-loading { display: flex; }
+  .canvas-loading .spinner { width: 18px; height: 18px; border-width: 2.5px; border-top-color: var(--accent); }
   .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
   .faces { display: flex; flex-direction: column; gap: 18px; }
   .face-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
@@ -168,6 +181,7 @@
       <button class="btn secondary" id="pickBtn" disabled title="Click the 4 corners of one cube face — works for angled/perspective shots">Pick corners</button>
     </div>
     <div id="canvasWrap">
+      <div class="canvas-loading" id="canvasLoading"><span class="spinner"></span> Loading image…</div>
       <canvas id="overlay"></canvas>
       <div class="progress-wrap" id="progressWrap">
         <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
