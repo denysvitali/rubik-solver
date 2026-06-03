@@ -26,7 +26,6 @@
     const line = `[${ts}] ${msg}`;
     logLines.push(line);
     if (appLogEl) appLogEl.textContent = logLines.slice(-80).join("\n");
-    console.log(msg);
   }
 
   // Capture all console output + uncaught errors into the visible log
