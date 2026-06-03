@@ -62,6 +62,7 @@
 
   // ---- Image loading ----
   function loadImageFromSrc(src) {
+    console.log("[load] loadImageFromSrc called, src type:", src.substring(0, 40));
     // Immediate feedback: show loading state so the user knows something is happening.
     statusEl.innerHTML = '<span class="spinner"></span> Loading image…';
     statusEl.classList.remove("ready");
@@ -72,8 +73,10 @@
     // For file blobs, read via FileReader → data URL (most compatible across browsers).
     // For remote/same-origin URLs, load directly with Image().
     const finish = (dataUrl) => {
+      console.log("[load] finish() called, dataUrl length:", dataUrl?.length);
       const img = new Image();
       img.onload = () => {
+        console.log("[load] img.onload fired, size:", img.naturalWidth, "x", img.naturalHeight);
         srcImg = img;
         cancelPick();
         wireframe = null; dragIdx = null;
@@ -83,7 +86,8 @@
         statusEl.textContent = cvReady ? "OpenCV ready — image loaded" : "Loading OpenCV…";
         statusEl.classList.toggle("ready", cvReady);
       };
-      img.onerror = () => {
+      img.onerror = (e) => {
+        console.error("[load] img.onerror fired:", e);
         canvasWrap.classList.remove("loading");
         statusEl.textContent = "Failed to load image";
         enableActions();
@@ -92,21 +96,32 @@
     };
 
     if (src.startsWith("blob:")) {
-      fetch(src).then(r => r.blob()).then(blob => {
+      console.log("[load] blob URL detected, using FileReader path");
+      fetch(src).then(r => {
+        console.log("[load] fetch ok, status:", r.status);
+        return r.blob();
+      }).then(blob => {
+        console.log("[load] blob ok, size:", blob.size, "type:", blob.type);
         const reader = new FileReader();
-        reader.onload = () => finish(reader.result);
-        reader.onerror = () => {
+        reader.onload = () => {
+          console.log("[load] FileReader ok, result length:", reader.result?.length);
+          finish(reader.result);
+        };
+        reader.onerror = (e) => {
+          console.error("[load] FileReader error:", e);
           canvasWrap.classList.remove("loading");
           statusEl.textContent = "Failed to read image";
           enableActions();
         };
         reader.readAsDataURL(blob);
-      }).catch(() => {
+      }).catch((e) => {
+        console.error("[load] fetch/Reader error:", e);
         canvasWrap.classList.remove("loading");
         statusEl.textContent = "Failed to load image";
         enableActions();
       });
     } else {
+      console.log("[load] non-blob URL, loading directly");
       finish(src);
     }
   }
@@ -133,7 +148,9 @@
 
   fileInput.addEventListener("change", (e) => {
     const f = e.target.files[0];
+    console.log("[file] change event, files:", e.target.files.length, "name:", f?.name, "size:", f?.size);
     if (f) loadImageFromSrc(URL.createObjectURL(f));
+    else console.warn("[file] change event but no file!");
   });
 
   // Test hook: load an arbitrary same-origin image (used by the headless harness)
@@ -145,7 +162,9 @@
     e.preventDefault();
     drop.classList.remove("drag");
     const f = e.dataTransfer.files[0];
+    console.log("[drop] drop event, files:", e.dataTransfer.files.length, "name:", f?.name, "size:", f?.size);
     if (f) loadImageFromSrc(URL.createObjectURL(f));
+    else console.warn("[drop] drop event but no file!");
   });
 
   sampleBtn.addEventListener("click", () => loadImageFromSrc("sample.jpg"));
