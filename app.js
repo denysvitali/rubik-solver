@@ -20,6 +20,15 @@
   const canvasWrap = $("canvasWrap");
   const appLogEl = $("appLog");
   const logLines = [];
+  let cvReady = false;
+  let srcImg = null;     // HTMLImageElement currently loaded
+  let lastFace = null;   // last detected face (for copy-to-clipboard)
+  let lastFaces = [];    // all detected faces (multi-face)
+  let pickMode = false;  // manual corner-picking active
+  let pickPts = [];      // clicked corners in full-resolution coords
+  let wireframe = null;  // editable cube wireframe {near, ring[6], sideStart} (full-res)
+  let dragIdx = null;    // which handle is being dragged: "near" | 0..5
+  let ortSession = null, ortLoading = null, modelStatus = "idle";
 
   function appLog(msg) {
     const ts = new Date().toLocaleTimeString();
@@ -58,14 +67,6 @@
   });
 
   const COLORS = RubikDetector.COLORS;
-  let cvReady = false;
-  let srcImg = null;     // HTMLImageElement currently loaded
-  let lastFace = null;   // last detected face (for copy-to-clipboard)
-  let lastFaces = [];    // all detected faces (multi-face)
-  let pickMode = false;  // manual corner-picking active
-  let pickPts = [];      // clicked corners in full-resolution coords
-  let wireframe = null;  // editable cube wireframe {near, ring[6], sideStart} (full-res)
-  let dragIdx = null;    // which handle is being dragged: "near" | 0..5
 
   const enableActions = () => {
     const on = cvReady && srcImg;
@@ -230,7 +231,6 @@
   // ---- Neural cube segmentation (onnxruntime-web; u2netp salient model) ----
   // Cleanly isolates the whole cube (incl. white pieces) from hand/background —
   // a far better silhouette seed than colour thresholds. Loaded lazily.
-  let ortSession = null, ortLoading = null, modelStatus = "idle";
   function ensureModel() {
     if (ortSession) return Promise.resolve(ortSession);
     if (!window.ort) { modelStatus = "onnxruntime-web not loaded (ort missing)"; return Promise.resolve(null); }
