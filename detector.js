@@ -14,6 +14,20 @@
 
   const WORK_WIDTH = 600; // fixed internal processing width
 
+  // Convert any cv.Mat (1/3/4 channel) to {name,width,height,data:RGBA} for the
+  // app's debug panel. Copies pixels out, so it's safe after the Mat is freed.
+  function matToDebug(cv, mat, name) {
+    const W = mat.cols, H = mat.rows, ch = mat.channels(), src = mat.data;
+    const data = new Uint8ClampedArray(W * H * 4);
+    for (let i = 0; i < W * H; i++) {
+      if (ch === 1) { const v = src[i]; data[i * 4] = v; data[i * 4 + 1] = v; data[i * 4 + 2] = v; }
+      else if (ch === 4) { data[i * 4] = src[i * 4]; data[i * 4 + 1] = src[i * 4 + 1]; data[i * 4 + 2] = src[i * 4 + 2]; }
+      else { data[i * 4] = src[i * 3]; data[i * 4 + 1] = src[i * 3 + 1]; data[i * 4 + 2] = src[i * 3 + 2]; }
+      data[i * 4 + 3] = 255;
+    }
+    return { name, width: W, height: H, data };
+  }
+
   // Standard cube colors (display swatch + classification target).
   const COLORS = {
     W: { name: "White",  css: "#f5f5f5" },
@@ -596,7 +610,8 @@
   }
 
   // Multi-face detection: finds and reads all visible faces.
-  function detectFaces(cv, src) {
+  function detectFaces(cv, src, opts) {
+    const debug = opts && opts.debug;
     const W0 = src.cols, H0 = src.rows;
     const scale = WORK_WIDTH / W0;
     const W = Math.max(1, Math.round(W0 * scale)), H = Math.max(1, Math.round(H0 * scale));
@@ -604,6 +619,14 @@
     cv.resize(src, work, new cv.Size(W, H), 0, 0, cv.INTER_AREA);
     const imgArea = W * H;
     const inv = 1 / scale;
+
+    if (debug) {
+      const gray = new cv.Mat(); cv.cvtColor(work, gray, cv.COLOR_RGBA2GRAY); cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
+      const th = new cv.Mat(); cv.adaptiveThreshold(gray, th, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 41, 9);
+      debug.push(matToDebug(cv, work, "1. Working image"));
+      debug.push(matToDebug(cv, th, "2. Sticker grid threshold"));
+      gray.delete(); th.delete();
+    }
 
     const stickers = findStickerSquares(cv, work, imgArea);
     if (stickers.length < 5) { work.delete(); return []; }
@@ -701,7 +724,8 @@
 
   const GEO_WORK = 900; // geometric path needs more silhouette precision than 600
 
-  function detectFacesGeometric(cv, src) {
+  function detectFacesGeometric(cv, src, opts) {
+    const debug = opts && opts.debug;
     const W0 = src.cols, H0 = src.rows;
     const scale = GEO_WORK / W0;
     const W = Math.max(1, Math.round(W0 * scale)), H = Math.max(1, Math.round(H0 * scale));
@@ -715,15 +739,44 @@
     const rgb = new cv.Mat(); cv.cvtColor(work, rgb, cv.COLOR_RGBA2RGB);
     const hsv = new cv.Mat(); cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
     cleanup.push(rgb, hsv);
-    // Cube = dominant HIGHLY-saturated region. Skin/wood/desk are duller; a
-    // high S floor keeps them out. OPEN first severs thin bridges to the hand /
-    // background, then CLOSE bridges glare gaps & seams within the cube.
+    // Cube silhouette. Seed from the highly-saturated cube pixels, then refine
+    // the boundary with GrabCut — colour models separate the vivid cube from a
+    // similarly-bright background (couch/pillow) through chroma bleed, which a
+    // plain saturation threshold can't (it bows out into the background).
     const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 150, 60, 0]);
     const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 0]);
-    const mask = new cv.Mat(); cv.inRange(hsv, lo, hi, mask);
-    cleanup.push(lo, hi, mask);
-    cv.morphologyEx(mask, mask, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(13, 13)));
-    cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(21, 21)));
+    const sat = new cv.Mat(); cv.inRange(hsv, lo, hi, sat);
+    cv.morphologyEx(sat, sat, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7)));
+    const mask = new cv.Mat();
+    cleanup.push(lo, hi, sat, mask);
+    let gcOK = false;
+    const sureFg = new cv.Mat(), prFg = new cv.Mat(), gmask = new cv.Mat(H, W, cv.CV_8U);
+    const bgM = new cv.Mat(), fgM = new cv.Mat();
+    cleanup.push(sureFg, prFg, gmask, bgM, fgM);
+    try {
+      cv.erode(sat, sureFg, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(9, 9)));
+      cv.dilate(sat, prFg, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(25, 25)));
+      gmask.setTo(new cv.Scalar(cv.GC_BGD));
+      for (let i = 0; i < W * H; i++) if (prFg.data[i]) gmask.data[i] = cv.GC_PR_FGD;
+      for (let i = 0; i < W * H; i++) if (sureFg.data[i]) gmask.data[i] = cv.GC_FGD;
+      cv.grabCut(rgb, gmask, new cv.Rect(0, 0, 1, 1), bgM, fgM, 4, cv.GC_INIT_WITH_MASK);
+      mask.create(H, W, cv.CV_8U);
+      for (let i = 0; i < W * H; i++) mask.data[i] = (gmask.data[i] === cv.GC_FGD || gmask.data[i] === cv.GC_PR_FGD) ? 255 : 0;
+      cv.morphologyEx(mask, mask, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5)));
+      cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(9, 9)));
+      const a = cv.countNonZero(mask);
+      gcOK = a > W * H * 0.02 && a < W * H * 0.6;
+    } catch (e) { gcOK = false; }
+    if (!gcOK) { // fallback: plain saturation silhouette
+      sat.copyTo(mask);
+      cv.morphologyEx(mask, mask, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(13, 13)));
+      cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(21, 21)));
+    }
+    if (debug) {
+      debug.push(matToDebug(cv, work, "1. Working image"));
+      debug.push(matToDebug(cv, sat, "2. Saturation seed (S≥150)"));
+      debug.push(matToDebug(cv, mask, gcOK ? "3. Cube silhouette (GrabCut)" : "3. Cube silhouette (threshold)"));
+    }
 
     const cnts = new cv.MatVector(); const hier = new cv.Mat();
     cv.findContours(mask, cnts, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);

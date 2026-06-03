@@ -244,12 +244,15 @@
     // Fallback: top-down geometric (glossy/stickerless/borderless cubes, where
     // per-piece segmentation fails — segments the cube silhouette and splits it
     // into 1 or 3 face quads).
-    let faces = RubikDetector.detectFaces(cv, full);
+    const debug = [];
+    let faces = RubikDetector.detectFaces(cv, full, { debug });
     let geometric = false;
     if (faces.length === 0) {
-      faces = RubikDetector.detectFacesGeometric(cv, full);
+      debug.length = 0;
+      faces = RubikDetector.detectFacesGeometric(cv, full, { debug });
       geometric = faces.length > 0;
     }
+    renderDebug(debug);
     if (faces.length > 0) {
       full.delete();
       lastFaces = faces.map((f) => f.face);
@@ -518,6 +521,28 @@
     try { document.execCommand("copy"); } catch (_) {}
     document.body.removeChild(ta);
     done();
+  }
+
+  // Render intermediate detection steps into the collapsed debug section.
+  function renderDebug(imgs) {
+    const box = $("debugSteps"), details = $("debugDetails");
+    if (!box || !details) return;
+    box.innerHTML = "";
+    if (!imgs || !imgs.length) { details.setAttribute("hidden", ""); return; }
+    details.removeAttribute("hidden");
+    for (const im of imgs) {
+      const fig = document.createElement("figure");
+      const tmp = document.createElement("canvas");
+      tmp.width = im.width; tmp.height = im.height;
+      tmp.getContext("2d").putImageData(new ImageData(im.data, im.width, im.height), 0, 0);
+      const c = document.createElement("canvas");
+      const s = Math.min(1, 240 / im.width);
+      c.width = Math.round(im.width * s); c.height = Math.round(im.height * s);
+      c.getContext("2d").drawImage(tmp, 0, 0, c.width, c.height);
+      const cap = document.createElement("figcaption");
+      cap.textContent = im.name;
+      fig.appendChild(c); fig.appendChild(cap); box.appendChild(fig);
+    }
   }
 
   function renderLegend() {
