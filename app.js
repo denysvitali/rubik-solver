@@ -69,7 +69,10 @@
     pickBtn.disabled = true;
     canvasWrap.classList.add("loading");
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    // Only set crossOrigin for absolute HTTP(S) URLs (CDN images). For same-origin
+    // paths (e.g. "sample.jpg") and blob: URLs (file picker), the server may not
+    // send CORS headers and the browser silently aborts the load.
+    if (/^https?:\/\//.test(src)) img.crossOrigin = "anonymous";
     img.onload = () => {
       srcImg = img;
       cancelPick();
