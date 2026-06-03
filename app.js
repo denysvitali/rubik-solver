@@ -18,6 +18,45 @@
   const progressFill = $("progressFill");
   const progressLabel = $("progressLabel");
   const canvasWrap = $("canvasWrap");
+  const appLogEl = $("appLog");
+  const logLines = [];
+
+  function appLog(msg) {
+    const ts = new Date().toLocaleTimeString();
+    const line = `[${ts}] ${msg}`;
+    logLines.push(line);
+    if (appLogEl) appLogEl.textContent = logLines.slice(-80).join("\n");
+    console.log(msg);
+  }
+
+  // Capture all console output + uncaught errors into the visible log
+  const _log = console.log.bind(console);
+  const _warn = console.warn.bind(console);
+  const _error = console.error.bind(console);
+  console.log = (...a) => { _log(...a); appLog(a.map(String).join(" ")); };
+  console.warn = (...a) => { _warn(...a); appLog("WARN: " + a.map(String).join(" ")); };
+  console.error = (...a) => { _error(...a); appLog("ERROR: " + a.map(String).join(" ")); };
+  window.addEventListener("error", (e) => appLog("UNCAUGHT: " + e.message + " @ " + e.filename + ":" + e.lineno));
+  window.addEventListener("unhandledrejection", (e) => appLog("UNHANDLED REJECTION: " + (e.reason?.message || e.reason)));
+
+  // Copy log button
+  $("copyLogBtn")?.addEventListener("click", () => {
+    const text = logLines.join("\n");
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        $("copyLogBtn").textContent = "Copied ✓";
+        setTimeout(() => ($("copyLogBtn").textContent = "Copy"), 1500);
+      });
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch (_) {}
+      document.body.removeChild(ta);
+      $("copyLogBtn").textContent = "Copied ✓";
+      setTimeout(() => ($("copyLogBtn").textContent = "Copy"), 1500);
+    }
+  });
 
   const COLORS = RubikDetector.COLORS;
   let cvReady = false;
