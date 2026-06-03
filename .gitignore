@@ -3,6 +3,7 @@ node_modules/
 
 # binaries / large vendored assets (never commit)
 opencv.js
+*.onnx
 *.jpg
 *.jpeg
 *.png

@@ -739,21 +739,33 @@
     const rgb = new cv.Mat(); cv.cvtColor(work, rgb, cv.COLOR_RGBA2RGB);
     const hsv = new cv.Mat(); cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
     cleanup.push(rgb, hsv);
-    // Cube silhouette. Seed from the highly-saturated cube pixels, then refine
-    // the boundary with GrabCut — colour models separate the vivid cube from a
-    // similarly-bright background (couch/pillow) through chroma bleed, which a
-    // plain saturation threshold can't (it bows out into the background).
+    const mask = new cv.Mat();
+    cleanup.push(mask);
+    let gcOK = false, usedModel = false;
+
+    // Best path: a precomputed cube mask from the segmentation model (cleanly
+    // covers the whole cube incl. white pieces, excludes hand/background) —
+    // solves the color-threshold failures. Otherwise fall back to the classical
+    // saturation-seed + GrabCut silhouette.
+    if (opts && opts.cubeMask) {
+      cv.resize(opts.cubeMask, mask, new cv.Size(W, H), 0, 0, cv.INTER_NEAREST);
+      if (mask.channels() > 1) cv.cvtColor(mask, mask, cv.COLOR_RGBA2GRAY);
+      cv.threshold(mask, mask, 127, 255, cv.THRESH_BINARY);
+      cv.morphologyEx(mask, mask, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5)));
+      cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(9, 9)));
+      const a = cv.countNonZero(mask);
+      usedModel = gcOK = a > W * H * 0.01 && a < W * H * 0.85;
+    }
+
     const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 150, 60, 0]);
     const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 0]);
     const sat = new cv.Mat(); cv.inRange(hsv, lo, hi, sat);
     cv.morphologyEx(sat, sat, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7)));
-    const mask = new cv.Mat();
-    cleanup.push(lo, hi, sat, mask);
-    let gcOK = false;
+    cleanup.push(lo, hi, sat);
     const sureFg = new cv.Mat(), prFg = new cv.Mat(), gmask = new cv.Mat(H, W, cv.CV_8U);
     const bgM = new cv.Mat(), fgM = new cv.Mat();
     cleanup.push(sureFg, prFg, gmask, bgM, fgM);
-    try {
+    if (!usedModel) try {
       cv.erode(sat, sureFg, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(9, 9)));
       cv.dilate(sat, prFg, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(25, 25)));
       gmask.setTo(new cv.Scalar(cv.GC_BGD));
@@ -774,8 +786,9 @@
     }
     if (debug) {
       debug.push(matToDebug(cv, work, "1. Working image"));
-      debug.push(matToDebug(cv, sat, "2. Saturation seed (S≥150)"));
-      debug.push(matToDebug(cv, mask, gcOK ? "3. Cube silhouette (GrabCut)" : "3. Cube silhouette (threshold)"));
+      if (!usedModel) debug.push(matToDebug(cv, sat, "2. Saturation seed (S≥150)"));
+      const src3 = usedModel ? "neural segmentation" : (gcOK ? "GrabCut" : "threshold");
+      debug.push(matToDebug(cv, mask, `${usedModel ? 2 : 3}. Cube silhouette (${src3})`));
     }
 
     const cnts = new cv.MatVector(); const hier = new cv.Mat();

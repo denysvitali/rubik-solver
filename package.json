@@ -12,6 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "jpeg-js": "^0.4.4",
+    "onnxruntime-node": "^1.26.0",
     "puppeteer": "^25.1.0"
   }
 }

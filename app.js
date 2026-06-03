@@ -115,9 +115,9 @@
     if (!cvReady || !srcImg) return;
     detectBtn.disabled = true;
     statusEl.innerHTML = '<span class="spinner"></span> Detecting…';
-    setTimeout(() => {
+    setTimeout(async () => {
       try {
-        runDetection();
+        await runDetection();
         statusEl.textContent = "Detection complete";
         statusEl.classList.add("ready");
       } catch (err) {
@@ -129,6 +129,41 @@
       }
     }, 30);
   });
+
+  // ---- Neural cube segmentation (onnxruntime-web; u2netp salient model) ----
+  // Cleanly isolates the whole cube (incl. white pieces) from hand/background —
+  // a far better silhouette seed than colour thresholds. Loaded lazily.
+  let ortSession = null, ortLoading = null;
+  function ensureModel() {
+    if (ortSession) return Promise.resolve(ortSession);
+    if (!window.ort) return Promise.resolve(null);
+    if (!ortLoading) {
+      try { ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/"; } catch (_) {}
+      ortLoading = ort.InferenceSession.create("u2netp.onnx")
+        .then((s) => (ortSession = s))
+        .catch((e) => { console.error("cube model load failed", e); return null; });
+    }
+    return ortLoading;
+  }
+  async function segmentCube(full) {
+    const sess = await ensureModel();
+    if (!sess) return null;
+    const N = 320, rs = new cv.Mat(), rgb = new cv.Mat();
+    cv.resize(full, rs, new cv.Size(N, N), 0, 0, cv.INTER_AREA);
+    cv.cvtColor(rs, rgb, cv.COLOR_RGBA2RGB);
+    const d = rgb.data, mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
+    const inp = new Float32Array(3 * N * N);
+    for (let i = 0; i < N * N; i++) for (let c = 0; c < 3; c++) inp[c * N * N + i] = ((d[i * 3 + c] / 255) - mean[c]) / std[c];
+    const out = await sess.run({ [sess.inputNames[0]]: new ort.Tensor("float32", inp, [1, 3, N, N]) });
+    const sal = out[sess.outputNames[0]].data;
+    let mn = Infinity, mx = -Infinity;
+    for (const v of sal) { if (v < mn) mn = v; if (v > mx) mx = v; }
+    const m = new cv.Mat(N, N, cv.CV_8U);
+    const rng = (mx - mn) || 1;
+    for (let i = 0; i < N * N; i++) m.data[i] = ((sal[i] - mn) / rng) > 0.5 ? 255 : 0;
+    rs.delete(); rgb.delete();
+    return m;
+  }
 
   // ---- Manual corner picking (for angled / multi-face photos) ----
   pickBtn.addEventListener("click", () => {
@@ -234,7 +269,7 @@
   const FACE_COLORS = ["#5fd97f", "#4f8cff", "#ffb43d", "#ff6fd0"];
 
   // ---- Run shared detector, then render ----
-  function runDetection() {
+  async function runDetection() {
     cancelPick();
     wireframe = null; dragIdx = null;
     const full = fullResMat();
@@ -248,8 +283,14 @@
     let faces = RubikDetector.detectFaces(cv, full, { debug });
     let geometric = false;
     if (faces.length === 0) {
+      // Neural segmentation for the silhouette (handles glossy/stickerless/
+      // white pieces + cluttered background). Falls back internally if absent.
+      let cubeMask = null;
+      statusEl.innerHTML = '<span class="spinner"></span> Segmenting cube (model)…';
+      try { cubeMask = await segmentCube(full); } catch (e) { console.error("segmentation failed", e); }
       debug.length = 0;
-      faces = RubikDetector.detectFacesGeometric(cv, full, { debug });
+      faces = RubikDetector.detectFacesGeometric(cv, full, { debug, cubeMask });
+      if (cubeMask) cubeMask.delete();
       geometric = faces.length > 0;
     }
     renderDebug(debug);
