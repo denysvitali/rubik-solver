@@ -895,39 +895,45 @@
     // canonical cube silhouette ring (cyclic) ↔ the 6 image corners
     const M6 = [[.5, -.5, -.5], [.5, .5, -.5], [-.5, .5, -.5], [-.5, .5, .5], [-.5, -.5, .5], [.5, -.5, .5]];
     const ALL = [.5, .5, .5, .5, .5, -.5, .5, -.5, -.5, .5, -.5, .5, -.5, .5, .5, -.5, .5, -.5, -.5, -.5, -.5, -.5, -.5, .5];
-    const f = 1.2 * W;
-    const K = cv.matFromArray(3, 3, cv.CV_64F, [f, 0, W / 2, 0, f, H / 2, 0, 0, 1]);
     const D = cv.matFromArray(1, 5, cv.CV_64F, [0, 0, 0, 0, 0]);
     const obj = cv.matFromArray(6, 3, cv.CV_64F, M6.flat());
-    let best = null;
-    for (let dir = 0; dir < 2; dir++) {
-      for (let rot = 0; rot < 6; rot++) {
-        const order = []; for (let i = 0; i < 6; i++) order.push(dir ? (rot - i + 12) % 6 : (rot + i) % 6);
-        const img = cv.matFromArray(6, 2, cv.CV_64F, order.flatMap((i) => [V[i].x, V[i].y]));
-        const rv = new cv.Mat(), tv = new cv.Mat();
-        let ok = false;
-        try { ok = cv.solvePnP(obj, img, K, D, rv, tv, false, cv.SOLVEPNP_ITERATIVE); } catch (e) { ok = false; }
-        if (ok) {
-          const proj = new cv.Mat(), jac = new cv.Mat();
-          cv.projectPoints(obj, rv, tv, K, D, proj, jac);
-          let err = 0; for (let i = 0; i < 6; i++) { const dx = proj.data64F[i * 2] - V[order[i]].x, dy = proj.data64F[i * 2 + 1] - V[order[i]].y; err += dx * dx + dy * dy; }
-          err = Math.sqrt(err / 6); proj.delete(); jac.delete();
-          if (!best || err < best.err) { if (best) { best.rv.delete(); best.tv.delete(); } best = { err, rv, tv }; }
-          else { rv.delete(); tv.delete(); }
-        } else { rv.delete(); tv.delete(); }
-        img.delete();
+    let best = null, bestK = null;
+    // Sweep focal length: a close phone shot has strong perspective (small f);
+    // the wrong f flattens the pose and collapses the near-corner to the
+    // hexagon centre. Pick the (f, correspondence) with lowest reprojection.
+    for (const fr of [0.6, 1.0, 1.6]) {
+      const f = fr * W;
+      const K = cv.matFromArray(3, 3, cv.CV_64F, [f, 0, W / 2, 0, f, H / 2, 0, 0, 1]);
+      for (let dir = 0; dir < 2; dir++) {
+        for (let rot = 0; rot < 6; rot++) {
+          const order = []; for (let i = 0; i < 6; i++) order.push(dir ? (rot - i + 12) % 6 : (rot + i) % 6);
+          const img = cv.matFromArray(6, 2, cv.CV_64F, order.flatMap((i) => [V[i].x, V[i].y]));
+          const rv = new cv.Mat(), tv = new cv.Mat();
+          let ok = false;
+          try { ok = cv.solvePnP(obj, img, K, D, rv, tv, false, cv.SOLVEPNP_ITERATIVE); } catch (e) { ok = false; }
+          if (ok) {
+            const proj = new cv.Mat(), jac = new cv.Mat();
+            cv.projectPoints(obj, rv, tv, K, D, proj, jac);
+            let err = 0; for (let i = 0; i < 6; i++) { const dx = proj.data64F[i * 2] - V[order[i]].x, dy = proj.data64F[i * 2 + 1] - V[order[i]].y; err += dx * dx + dy * dy; }
+            err = Math.sqrt(err / 6); proj.delete(); jac.delete();
+            if (!best || err < best.err) { if (best) { best.rv.delete(); best.tv.delete(); best.K.delete(); } best = { err, rv, tv, K: K.clone() }; }
+            else { rv.delete(); tv.delete(); }
+          } else { rv.delete(); tv.delete(); }
+          img.delete();
+        }
       }
+      K.delete();
     }
     let result = null;
-    if (best && best.err < W * 0.08) { // accept only a reasonable fit
+    if (best && best.err < W * 0.06) { // accept only a good fit
       const allObj = cv.matFromArray(8, 3, cv.CV_64F, ALL);
       const proj = new cv.Mat(), jac = new cv.Mat();
-      cv.projectPoints(allObj, best.rv, best.tv, K, D, proj, jac);
+      cv.projectPoints(allObj, best.rv, best.tv, best.K, D, proj, jac);
       result = []; for (let i = 0; i < 8; i++) result.push({ x: proj.data64F[i * 2], y: proj.data64F[i * 2 + 1] });
       allObj.delete(); proj.delete(); jac.delete();
     }
-    if (best) { best.rv.delete(); best.tv.delete(); }
-    K.delete(); D.delete(); obj.delete();
+    if (best) { best.rv.delete(); best.tv.delete(); best.K.delete(); }
+    D.delete(); obj.delete();
     return result;
   }
 
