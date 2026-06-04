@@ -11,6 +11,9 @@ const targets = [];
 function walk(dir) {
   for (const name of readdirSync(dir)) {
     if (name === "node_modules" || name === "tmp" || name === ".git") continue;
+    // opencv.js is the 10MB vendored Emscripten bundle (WASM embedded) — not
+    // valid JS syntax. We test by loading it at runtime, not by parsing.
+    if (name === "opencv.js") continue;
     const p = join(dir, name);
     if (statSync(p).isDirectory()) walk(p);
     else if ([".js", ".mjs"].includes(extname(p))) targets.push(p);
