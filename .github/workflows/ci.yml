@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  unit:
+    name: Unit + detect tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm ci
+      # Vendored opencv.js (10 MB) — same version the browser CDN serves.
+      - run: curl -sLo opencv.js https://docs.opencv.org/4.10.0/opencv.js
+      - run: npm run check
+      - run: node --test tests/unit.test.mjs tests/detect.test.mjs
+
+  browser:
+    name: Browser integration test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - run: curl -sLo opencv.js https://docs.opencv.org/4.10.0/opencv.js
+      - name: Start static server
+        run: python3 server.py &
+      - name: Wait for server
+        run: sleep 2
+      - name: Run harness test
+        # puppeteer 21+ downloads its own chromium on first install on the
+        # ubuntu-latest runner. If the runner is sandboxed, set
+        # PUPPETEER_EXECUTABLE_PATH to the system chromium.
+        run: node --test tests/harness.test.mjs
+      - name: Upload failure screenshot
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-failure
+          path: |
+            tmp/
+            test/

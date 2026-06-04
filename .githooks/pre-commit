@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Pre-commit safety net: run the syntax + load check before each commit.
+# Configure once with:  git config core.hooksPath .githooks
+set -e
+node scripts/check.mjs
