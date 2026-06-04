@@ -41,4 +41,4 @@ if (nums.length >= 8) {
   for (let y = 0; y < H; y += 50) for (let x = 0; x < W; x++) p(x, y, [255, 255, 0], y % 100 === 0 ? 0.7 : 0.3);
   console.log(`gridded ${W}x${H}; lines every 50px (brighter every 100px)`);
 }
-fs.writeFileSync(new URL("../detected.jpg", import.meta.url), jpeg.encode({ data: o, width: W, height: H }, 92).data);
+fs.writeFileSync(new URL("../tmp/quad.jpg", import.meta.url), jpeg.encode({ data: o, width: W, height: H }, 92).data);

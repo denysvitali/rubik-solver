@@ -4,14 +4,20 @@ node_modules/
 # binaries / large vendored assets (never commit)
 opencv.js
 *.onnx
+
+# image outputs (test artifacts, debug screenshots, samples)
 *.jpg
 *.jpeg
 *.png
 *.gif
 *.webp
+tmp/
 
-# test/debug output
-shot*.png
-crop.jpg
-mask*.jpg
-detected.jpg
+# editor / OS noise
+*.log
+*.swp
+.DS_Store
+
+# python bytecode
+__pycache__/
+*.pyc

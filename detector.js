@@ -5,6 +5,17 @@
  *
  * Determinism: detectCube() resizes the input to a FIXED working width before
  * doing anything, so the result no longer depends on the display/source size.
+ *
+ * Public API (JSDoc on each):
+ *   detectCube(cv, src)                   → single face, region/grid/anchor/crop
+ *   detectFaces(cv, src, opts?)           → multi-face sticker-based detector
+ *   detectFacesGeometric(cv, src, opts?)  → multi-face geometric/silhouette detector
+ *   facesFromWireframe(cv, src, wf)       → 3 quads from editable {near, ring[6], sideStart}
+ *   readFaceQuad(cv, src, quad)           → 3×3 read of a 4-corner quad
+ *   sampleQuad(cv, src, corners)          → perspective-warp + 3×3 read
+ *   orderCorners(pts)                     → [TL,TR,BR,BL] from 4 unordered points
+ *   classifyColor(r,g,b)                  → 'W' | 'Y' | 'R' | 'O' | 'G' | 'B'
+ *   COLORS, WORK_WIDTH                    → constants
  */
 (function (root, factory) {
   if (typeof module !== "undefined" && module.exports) module.exports = factory();
@@ -12,7 +23,70 @@
 })(typeof self !== "undefined" ? self : globalThis, function () {
   "use strict";
 
-  const WORK_WIDTH = 600; // fixed internal processing width
+  // ---- Constants ----
+  const WORK_WIDTH = 600;   // fixed internal processing width for detectCube/detectFaces
+  const GEO_WORK   = 900;   // geometric path needs more silhouette precision
+  const WARP_SIZE  = 300;   // pixels along each side of a perspective-warped face
+  const SAMPLE_STD_TOLERANCE = 8; // px — cell-centre tolerance for "structural" tests
+
+  // All magic numbers, hoisted. Tweaking a threshold is a one-line edit here.
+  const T = {
+    // findStickerSquares
+    sticker: {
+      areaFrac: [0.0005, 0.03],   // [min, max] as fraction of image area
+      polyEpsilonK: 0.06,         // approxPolyDP epsilon = k * perimeter
+      minFill: 0.6,                // contour fill ratio (area / bbox area)
+      maxAspect: 2.2,              // max(w, h) / min(w, h)
+      thresholdBlocks: [41, 61, 81], // multi-scale adaptive threshold block sizes
+      dedupDistK: 0.5,            // dedup radius = side * k
+    },
+    // findStickerSquares vivid HSV pass (recovers saturated stickers)
+    vividHsv: { lo: [0, 90, 60, 0],   hi: [180, 255, 255, 0] },
+    // findColorAnchors — green+blue blobs (absent from skin/brick/wood)
+    anchor: {
+      hsvLo: [40, 70, 45, 0],
+      hsvHi: [135, 255, 255, 0],
+      areaFrac: [0.0004, 0.05],
+      aspect: [0.3, 3.2],
+      minFill: 0.45,
+      clusterDistK: 4,            // cluster distance = median_side * k
+    },
+    // squaredBBox
+    pad: { crop: 0.20, cluster: 0.04, anchor: 0.10 },
+    // clusterStickers
+    cluster: {
+      minSizeRatio: 0.55,         // min(side)/max(side) of two stickers to be similar
+      proximityK: 1.8,            // neighbour distance = max(side) * k
+    },
+    // fitGrid
+    grid: {
+      borderK: 0.55,              // face-corner extrapolation = avgSide * k
+      spacingRatioMin: 0.2,       // min(outer gaps) / max(outer gaps) — uniformity check
+    },
+    // splitByOrientation
+    split: { minClusterSide: 1.3 }, // gap / median_side must exceed this to split
+    // detectFacesGeometric — saturation seed for GrabCut
+    satHsv: { lo: [0, 150, 60, 0], hi: [180, 255, 255, 0] },
+    silhouette: { modelArea: [0.01, 0.85], grabcutArea: [0.02, 0.6], minCubeAreaFrac: 0.03 },
+    approxPoly: { epsilons: [0.02, 0.025, 0.03, 0.035, 0.04, 0.05, 0.06, 0.08] },
+    edgeSnap: { samples: 24, range: 20, minPeak: 20 },
+    // solveCubePose
+    pnp: { focal: [0.6, 1.0, 1.6], maxReprojFrac: 0.06 },
+    // altScore
+    altScoreSize: 180,
+  };
+
+  // ---- RAII for cv.Mat (which has no JS GC; .delete() releases the WASM heap) ----
+  // Use withMats(cv, fn) to ensure every Mat created during fn() is .delete()d
+  // in a finally block. Escape hatch: any Mat passed *into* the function is
+  // owned by the caller and is NOT deleted.
+  function withMats(cv, fn) {
+    const tracked = new Set();
+    const orig = cv.Mat.bind(cv);
+    cv.Mat = function (...a) { const m = new orig(...a); tracked.add(m); return m; };
+    try { return fn(); }
+    finally { cv.Mat = orig; for (const m of tracked) { try { m.delete(); } catch (_) {} } }
+  }
 
   // Convert any cv.Mat (1/3/4 channel) to {name,width,height,data:RGBA} for the
   // app's debug panel. Copies pixels out, so it's safe after the Mat is freed.
@@ -115,65 +189,67 @@
   // Each sticker carries its true quad corners + edge unit-vectors (from
   // approxPolyDP, NOT minAreaRect — the bounding box hides per-face shear).
   function findStickerSquares(cv, mat, imgArea) {
-    const gray = new cv.Mat(); cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
-    const k3 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
-    const raw = [];
+    return withMats(cv, () => {
+      const gray = new cv.Mat(); cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
+      cv.GaussianBlur(gray, gray, new cv.Size(3, 3), 0);
+      const k3 = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+      const raw = [];
 
-    const harvest = (bin) => {
-      const cnts = new cv.MatVector(); const hier = new cv.Mat();
-      cv.findContours(bin, cnts, hier, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
-      for (let i = 0; i < cnts.size(); i++) {
-        const c = cnts.get(i); const area = cv.contourArea(c);
-        if (area < imgArea * 0.0005 || area > imgArea * 0.03) { c.delete(); continue; }
-        const peri = cv.arcLength(c, true);
-        const ap = new cv.Mat(); cv.approxPolyDP(c, ap, 0.06 * peri, true);
-        const ok4 = ap.rows === 4 && cv.isContourConvex(ap);
-        const rr = cv.minAreaRect(c); const w = rr.size.width, h = rr.size.height;
-        const fill = area / Math.max(1, w * h), aspect = Math.max(w, h) / Math.max(1, Math.min(w, h));
-        if (ok4 && fill > 0.6 && aspect < 2.2) {
-          const P = []; for (let j = 0; j < 4; j++) P.push({ x: ap.data32S[j * 2], y: ap.data32S[j * 2 + 1] });
-          const cx = (P[0].x + P[1].x + P[2].x + P[3].x) / 4, cy = (P[0].y + P[1].y + P[2].y + P[3].y) / 4;
-          const r = cv.boundingRect(c);
-          const nrm = (v) => { const m = Math.hypot(v.x, v.y) || 1; return { x: v.x / m, y: v.y / m }; };
-          raw.push({
-            cx, cy, side: (w + h) / 2, rect: r, corners: P,
-            e1: nrm({ x: P[1].x - P[0].x, y: P[1].y - P[0].y }),
-            e2: nrm({ x: P[2].x - P[1].x, y: P[2].y - P[1].y }),
-          });
+      const harvest = (bin) => {
+        const cnts = new cv.MatVector(); const hier = new cv.Mat();
+        cv.findContours(bin, cnts, hier, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+        for (let i = 0; i < cnts.size(); i++) {
+          const c = cnts.get(i); const area = cv.contourArea(c);
+          if (area < imgArea * T.sticker.areaFrac[0] || area > imgArea * T.sticker.areaFrac[1]) { c.delete(); continue; }
+          const peri = cv.arcLength(c, true);
+          const ap = new cv.Mat(); cv.approxPolyDP(c, ap, T.sticker.polyEpsilonK * peri, true);
+          const ok4 = ap.rows === 4 && cv.isContourConvex(ap);
+          const rr = cv.minAreaRect(c); const w = rr.size.width, h = rr.size.height;
+          const fill = area / Math.max(1, w * h), aspect = Math.max(w, h) / Math.max(1, Math.min(w, h));
+          if (ok4 && fill > T.sticker.minFill && aspect < T.sticker.maxAspect) {
+            const P = []; for (let j = 0; j < 4; j++) P.push({ x: ap.data32S[j * 2], y: ap.data32S[j * 2 + 1] });
+            const cx = (P[0].x + P[1].x + P[2].x + P[3].x) / 4, cy = (P[0].y + P[1].y + P[2].y + P[3].y) / 4;
+            const r = cv.boundingRect(c);
+            const nrm = (v) => { const m = Math.hypot(v.x, v.y) || 1; return { x: v.x / m, y: v.y / m }; };
+            raw.push({
+              cx, cy, side: (w + h) / 2, rect: r, corners: P,
+              e1: nrm({ x: P[1].x - P[0].x, y: P[1].y - P[0].y }),
+              e2: nrm({ x: P[2].x - P[1].x, y: P[2].y - P[1].y }),
+            });
+          }
+          ap.delete(); c.delete();
         }
-        ap.delete(); c.delete();
+        cnts.delete(); hier.delete();
+      };
+
+      for (const bs of T.sticker.thresholdBlocks) {              // multi-scale black-grid threshold
+        const th = new cv.Mat();
+        cv.adaptiveThreshold(gray, th, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, bs, 9);
+        cv.morphologyEx(th, th, cv.MORPH_OPEN, k3);
+        harvest(th); th.delete();
       }
-      cnts.delete(); hier.delete();
-    };
+      { // also vivid color blobs — recovers saturated stickers the grid threshold merges
+        const rgb = new cv.Mat(); cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
+        const hsv = new cv.Mat(); cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+        const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), T.vividHsv.lo);
+        const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), T.vividHsv.hi);
+        const m = new cv.Mat(); cv.inRange(hsv, lo, hi, m); cv.morphologyEx(m, m, cv.MORPH_OPEN, k3);
+        harvest(m);
+        rgb.delete(); hsv.delete(); lo.delete(); hi.delete(); m.delete();
+      }
 
-    for (const bs of [41, 61, 81]) {              // multi-scale black-grid threshold
-      const th = new cv.Mat();
-      cv.adaptiveThreshold(gray, th, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, bs, 9);
-      cv.morphologyEx(th, th, cv.MORPH_OPEN, k3);
-      harvest(th); th.delete();
-    }
-    { // also vivid color blobs — recovers saturated stickers the grid threshold merges
-      const rgb = new cv.Mat(); cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
-      const hsv = new cv.Mat(); cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
-      const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 90, 60, 0]);
-      const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 0]);
-      const m = new cv.Mat(); cv.inRange(hsv, lo, hi, m); cv.morphologyEx(m, m, cv.MORPH_OPEN, k3);
-      harvest(m);
-      rgb.delete(); hsv.delete(); lo.delete(); hi.delete(); m.delete();
-    }
-
-    // dedup overlapping detections (keep larger)
-    raw.sort((a, b) => b.side - a.side);
-    const st = [];
-    for (const q of raw) if (!st.some((d) => Math.hypot(d.cx - q.cx, d.cy - q.cy) < d.side * 0.5)) st.push(q);
-    gray.delete(); k3.delete();
-    return st;
+      // dedup overlapping detections (keep larger)
+      raw.sort((a, b) => b.side - a.side);
+      const st = [];
+      for (const q of raw) if (!st.some((d) => Math.hypot(d.cx - q.cx, d.cy - q.cy) < d.side * T.sticker.dedupDistK)) st.push(q);
+      gray.delete(); k3.delete();
+      return st;
+    });
   }
 
-  // Cluster by proximity, optionally requiring similar sizes (for real
-  // sticker squares that should all be about the same size).
-  function clusterStickers(items, sizeSimilar) {
+  // Cluster stickers by proximity; require similar sizes (real sticker
+  // squares are all about the same size; bg noise is not).
+  function clusterStickers(items) {
     const n = items.length;
     if (!n) return [];
     const sides = items.map((s) => s.side).sort((a, b) => a - b);
@@ -183,8 +259,8 @@
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const a = items[i], b = items[j], bg = Math.max(a.side, b.side);
-        const ok = !sizeSimilar || Math.min(a.side, b.side) / bg > 0.55;
-        if (ok && Math.hypot(a.cx - b.cx, a.cy - b.cy) < bg * (sizeSimilar ? 1.8 : 4)) par[find(i)] = find(j);
+        if (Math.min(a.side, b.side) / bg > T.cluster.minSizeRatio &&
+            Math.hypot(a.cx - b.cx, a.cy - b.cy) < bg * T.cluster.proximityK) par[find(i)] = find(j);
       }
     }
     const g = {};
@@ -194,38 +270,41 @@
 
   // Green+blue blobs — hues absent from skin/brick/wood/paper backgrounds.
   function findColorAnchors(cv, mat, imgArea) {
-    const rgb = new cv.Mat();
-    cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
-    const hsv = new cv.Mat();
-    cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
-    const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [40, 70, 45, 0]);
-    const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [135, 255, 255, 0]);
-    const mask = new cv.Mat();
-    cv.inRange(hsv, lo, hi, mask);
-    cv.morphologyEx(mask, mask, cv.MORPH_OPEN,
-      cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2)));
+    return withMats(cv, () => {
+      const rgb = new cv.Mat();
+      cv.cvtColor(mat, rgb, cv.COLOR_RGBA2RGB);
+      const hsv = new cv.Mat();
+      cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+      const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), T.anchor.hsvLo);
+      const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), T.anchor.hsvHi);
+      const mask = new cv.Mat();
+      cv.inRange(hsv, lo, hi, mask);
+      cv.morphologyEx(mask, mask, cv.MORPH_OPEN,
+        cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2, 2)));
 
-    const cnts = new cv.MatVector();
-    const hier = new cv.Mat();
-    cv.findContours(mask, cnts, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-    const anchors = [];
-    for (let i = 0; i < cnts.size(); i++) {
-      const cnt = cnts.get(i);
-      const area = cv.contourArea(cnt);
-      const r = cv.boundingRect(cnt);
-      const ar = r.width / r.height;
-      const fill = area / (r.width * r.height);
-      if (area > imgArea * 0.0004 && area < imgArea * 0.05 &&
-          ar > 0.3 && ar < 3.2 && fill > 0.45) {
-        anchors.push({ cx: r.x + r.width / 2, cy: r.y + r.height / 2, side: Math.min(r.width, r.height), rect: r });
+      const cnts = new cv.MatVector();
+      const hier = new cv.Mat();
+      cv.findContours(mask, cnts, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+      const anchors = [];
+      for (let i = 0; i < cnts.size(); i++) {
+        const cnt = cnts.get(i);
+        const area = cv.contourArea(cnt);
+        const r = cv.boundingRect(cnt);
+        const ar = r.width / r.height;
+        const fill = area / (r.width * r.height);
+        if (area > imgArea * T.anchor.areaFrac[0] && area < imgArea * T.anchor.areaFrac[1] &&
+            ar > T.anchor.aspect[0] && ar < T.anchor.aspect[1] && fill > T.anchor.minFill) {
+          anchors.push({ cx: r.x + r.width / 2, cy: r.y + r.height / 2, side: Math.min(r.width, r.height), rect: r });
+        }
+        cnt.delete();
       }
-      cnt.delete();
-    }
-    rgb.delete(); hsv.delete(); lo.delete(); hi.delete();
-    mask.delete(); cnts.delete(); hier.delete();
-    return anchors;
+      cnts.delete(); hier.delete();
+      return anchors;
+    });
   }
 
+  // Pick the largest cluster of color anchors (= the cube). Returns the
+  // cluster directly, not an array of clusters.
   function pickCubeCluster(anchors) {
     const n = anchors.length;
     if (!n) return null;
@@ -236,7 +315,7 @@
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
         const d = Math.hypot(anchors[i].cx - anchors[j].cx, anchors[i].cy - anchors[j].cy);
-        if (d < med * 4) par[find(i)] = find(j);
+        if (d < med * T.anchor.clusterDistK) par[find(i)] = find(j);
       }
     }
     const groups = {};
@@ -245,7 +324,7 @@
   }
 
   function squaredBBox(cluster, W, H, pad) {
-    if (pad == null) pad = 0.10;
+    if (pad == null) pad = T.pad.anchor;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const a of cluster) {
       minX = Math.min(minX, a.rect.x); minY = Math.min(minY, a.rect.y);
@@ -367,13 +446,13 @@
     // 7. Validate spacing uniformity
     const colGaps = [colCenters[1] - colCenters[0], colCenters[2] - colCenters[1]];
     const rowGaps = [rowCenters[1] - rowCenters[0], rowCenters[2] - rowCenters[1]];
-    if (Math.min(...colGaps) / Math.max(...colGaps) < 0.2) return null;
-    if (Math.min(...rowGaps) / Math.max(...rowGaps) < 0.2) return null;
+    if (Math.min(...colGaps) / Math.max(...colGaps) < T.grid.spacingRatioMin) return null;
+    if (Math.min(...rowGaps) / Math.max(...rowGaps) < T.grid.spacingRatioMin) return null;
 
     // 8. Compute face corners: extrapolate from outer grid positions
     const avgSide = stickers.reduce((s, st) => s + st.side, 0) / n;
-    const borderU = avgSide * 0.55;
-    const borderV = avgSide * 0.55;
+    const borderU = avgSide * T.grid.borderK;
+    const borderV = avgSide * T.grid.borderK;
     const cornersUV = [
       { u: colCenters[0] - borderU, v: rowCenters[0] - borderV },
       { u: colCenters[2] + borderU, v: rowCenters[0] - borderV },
@@ -426,7 +505,7 @@
     // only accept the split if the two groups are well-separated (a real seam):
     // gap between cluster means should exceed ~1 sticker pitch.
     const side = stickers.map((s) => s.side).sort((a, b) => a - b)[n >> 1] || 30;
-    if (Math.abs(c1 - c0) < side * 1.3) return [stickers];
+    if (Math.abs(c1 - c0) < side * T.split.minClusterSide) return [stickers];
     return [A, B];
   }
 
@@ -483,7 +562,7 @@
     // Try to fit a grid from the detected stickers directly.
     function tryGridFit(stk, imgScale) {
       if (stk.length < 5) return null;
-      const clusters = clusterStickers(stk, true);
+      const clusters = clusterStickers(stk);
       for (const cluster of clusters) {
         if (cluster.length < 5) continue;
         let grid = fitGrid(cluster);
@@ -513,7 +592,7 @@
       const anchors = findColorAnchors(cv, work, imgArea);
       const anchorCluster = pickCubeCluster(anchors);
       if (anchorCluster && anchorCluster.length >= 2) {
-        const anchorBox = squaredBBox(anchorCluster, W, H, 0.20);
+        const anchorBox = squaredBBox(anchorCluster, W, H, T.pad.crop);
         // Convert to full-res coordinates
         const fx = Math.max(0, Math.round(anchorBox.x * inv));
         const fy = Math.max(0, Math.round(anchorBox.y * inv));
@@ -538,7 +617,7 @@
           // Grid fit uses coords in arbitrary space — pass them as-is and
           // the corners will be in full-res space already
           if (adjSquares.length >= 5) {
-            const adjClusters = clusterStickers(adjSquares, true);
+            const adjClusters = clusterStickers(adjSquares);
             for (const cluster of adjClusters) {
               if (cluster.length < 5) continue;
               const grid = fitGrid(cluster);
@@ -570,11 +649,11 @@
     }
 
     // Method 2 — sticker proximity clustering (original Method A)
-    const sqClusters = clusterStickers(squares, true);
+    const sqClusters = clusterStickers(squares);
     const sqBest = sqClusters[0] || [];
     let method, regionW, confident, overlayBoxes;
     if (sqBest.length >= 5) {
-      regionW = squaredBBox(sqBest, W, H, 0.04);
+      regionW = squaredBBox(sqBest, W, H, T.pad.cluster);
       confident = true; method = "stickers"; overlayBoxes = sqBest;
     } else {
       // Method 3 — green/blue anchors
@@ -651,7 +730,7 @@
       return true;
     };
 
-    const clusters = clusterStickers(stickers, true);
+    const clusters = clusterStickers(stickers);
     for (const cluster of clusters) {
       if (cluster.length < 5) continue;
       // One face has at most 9 stickers; a bigger cluster is multiple faces
@@ -722,8 +801,6 @@
     return { cells, detected: true };
   }
 
-  const GEO_WORK = 900; // geometric path needs more silhouette precision than 600
-
   function detectFacesGeometric(cv, src, opts) {
     const debug = opts && opts.debug;
     const W0 = src.cols, H0 = src.rows;
@@ -754,11 +831,11 @@
       cv.morphologyEx(mask, mask, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5)));
       cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(9, 9)));
       const a = cv.countNonZero(mask);
-      usedModel = gcOK = a > W * H * 0.01 && a < W * H * 0.85;
+      usedModel = gcOK = a > W * H * T.silhouette.modelArea[0] && a < W * H * T.silhouette.modelArea[1];
     }
 
-    const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 150, 60, 0]);
-    const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 255, 0]);
+    const lo = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), T.satHsv.lo);
+    const hi = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), T.satHsv.hi);
     const sat = new cv.Mat(); cv.inRange(hsv, lo, hi, sat);
     cv.morphologyEx(sat, sat, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(7, 7)));
     cleanup.push(lo, hi, sat);
@@ -777,7 +854,7 @@
       cv.morphologyEx(mask, mask, cv.MORPH_OPEN, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(5, 5)));
       cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(9, 9)));
       const a = cv.countNonZero(mask);
-      gcOK = a > W * H * 0.02 && a < W * H * 0.6;
+      gcOK = a > W * H * T.silhouette.grabcutArea[0] && a < W * H * T.silhouette.grabcutArea[1];
     } catch (e) { gcOK = false; }
     if (!gcOK) { // fallback: plain saturation silhouette
       sat.copyTo(mask);
@@ -796,7 +873,7 @@
     cleanup.push(cnts, hier);
     let best = -1, bestA = 0;
     for (let i = 0; i < cnts.size(); i++) { const a = cv.contourArea(cnts.get(i)); if (a > bestA) { bestA = a; best = i; } }
-    if (best < 0 || bestA < W * H * 0.03) return done();
+    if (best < 0 || bestA < W * H * T.silhouette.minCubeAreaFrac) return done();
 
     const hullM = new cv.Mat(); cv.convexHull(cnts.get(best), hullM, false, true);
     cleanup.push(hullM);
@@ -804,7 +881,7 @@
     const peri = cv.arcLength(hullM, true);
     // adaptively pick an epsilon giving 4 (single face) or 6 (three faces) corners
     let corners = null;
-    for (const eps of [0.02, 0.025, 0.03, 0.035, 0.04, 0.05, 0.06, 0.08]) {
+    for (const eps of T.approxPoly.epsilons) {
       const ap = new cv.Mat(); cv.approxPolyDP(hullM, ap, eps * peri, true);
       if (ap.rows === 4 || ap.rows === 6) { corners = []; for (let i = 0; i < ap.rows; i++) corners.push({ x: ap.data32S[i * 2], y: ap.data32S[i * 2 + 1] }); ap.delete(); break; }
       ap.delete();
@@ -828,12 +905,12 @@
     const snapEdge = (A, B) => {
       const dx = B.x - A.x, dy = B.y - A.y, L = Math.hypot(dx, dy) || 1;
       const nx = -dy / L, ny = dx / L; // perpendicular
-      const pts = [], NS = 24, RANGE = 20;
+      const pts = [], NS = T.edgeSnap.samples, RANGE = T.edgeSnap.range;
       for (let s = 1; s < NS; s++) {
         const t = s / NS, px = A.x + dx * t, py = A.y + dy * t;
         let bestG = -1, bo = 0;
         for (let o = -RANGE; o <= RANGE; o++) { const g = gAt(px + nx * o, py + ny * o); if (g > bestG) { bestG = g; bo = o; } }
-        if (bestG > 20) pts.push({ x: px + nx * bo, y: py + ny * bo });
+        if (bestG > T.edgeSnap.minPeak) pts.push({ x: px + nx * bo, y: py + ny * bo });
       }
       if (pts.length < 4) return null;
       const m = cv.matFromArray(pts.length, 1, cv.CV_32FC2, pts.flatMap((p) => [p.x, p.y]));
@@ -853,7 +930,7 @@
 
     if (N === 4) {
       const quad = toFull(V);
-      out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 4, method: "geometric-1face", cluster: [], silhouette });
+      out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 9, method: "geometric-1face", cluster: [], silhouette });
       return done();
     }
 
@@ -884,7 +961,7 @@
       for (let k = 0; k < 3; k++) {
         const a = (ss2 + 2 * k) % 6, b = (a + 1) % 6, c = (a + 2) % 6;
         const q = [nearFull, ringFull[a], ringFull[b], ringFull[c]];
-        const S = 180;
+        const S = T.altScoreSize;
         const sT = cv.matFromArray(4, 1, cv.CV_32FC2, [q[0].x, q[0].y, q[1].x, q[1].y, q[2].x, q[2].y, q[3].x, q[3].y]);
         const dT = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, S, 0, S, S, 0, S]);
         const M = cv.getPerspectiveTransform(sT, dT); const w = new cv.Mat();
@@ -937,7 +1014,7 @@
     // Sweep focal length: a close phone shot has strong perspective (small f);
     // the wrong f flattens the pose and collapses the near-corner to the
     // hexagon centre. Pick the (f, correspondence) with lowest reprojection.
-    for (const fr of [0.6, 1.0, 1.6]) {
+    for (const fr of T.pnp.focal) {
       const f = fr * W;
       const K = cv.matFromArray(3, 3, cv.CV_64F, [f, 0, W / 2, 0, f, H / 2, 0, 0, 1]);
       for (let dir = 0; dir < 2; dir++) {
@@ -961,7 +1038,7 @@
       K.delete();
     }
     let result = null;
-    if (best && best.err < W * 0.06) { // accept only a good fit
+    if (best && best.err < W * T.pnp.maxReprojFrac) { // accept only a good fit
       const allObj = cv.matFromArray(8, 3, cv.CV_64F, ALL);
       const proj = new cv.Mat(), jac = new cv.Mat();
       cv.projectPoints(allObj, best.rv, best.tv, best.K, D, proj, jac);

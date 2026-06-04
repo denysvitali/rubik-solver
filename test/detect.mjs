@@ -61,5 +61,5 @@ if (result.corners) {
   for (let i = 0; i <= 3; i++) { for (let y = rg.y | 0; y < rg.y + rg.h; y++) p((rg.x + cw * i) | 0, y, [0, 255, 0]); for (let x = rg.x | 0; x < rg.x + rg.w; x++) p(x, (rg.y + ch * i) | 0, [0, 255, 0]); }
 }
 
-fs.writeFileSync(new URL("../detected.jpg", import.meta.url), jpeg.encode({ data: out, width: W, height: H }, 92).data);
-console.log("wrote detected.jpg");
+fs.writeFileSync(new URL("../tmp/detect.jpg", import.meta.url), jpeg.encode({ data: out, width: W, height: H }, 92).data);
+console.log("wrote tmp/detect.jpg");

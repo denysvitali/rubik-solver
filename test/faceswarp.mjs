@@ -33,4 +33,4 @@ faces.forEach((f,fi)=>{
   console.log(`face ${fi+1}:`,f.face.cells.map(c=>c.code).join(""));
   srcT.delete();dstT.delete();M.delete();warp.delete();
 });
-fs.writeFileSync(new URL("../detected.jpg",import.meta.url),jpeg.encode({data:mont,width:S*3,height:S},92).data);
+fs.writeFileSync(new URL("../tmp/faceswarp.jpg",import.meta.url),jpeg.encode({data:mont,width:S*3,height:S},92).data);

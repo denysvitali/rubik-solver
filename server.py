@@ -10,15 +10,32 @@ opencv.js is intentionally NOT busted (10 MB, never changes) so it stays cached.
 """
 import http.server
 import socketserver
-import time
+import hashlib
 import os
 import urllib.request
 
 PORT = 8085
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
-# Files whose <script>/<link> refs get a fresh version token each page load.
+# Files whose <script>/<link> refs get a content-derived version token.
+# The token is recomputed only when one of the files' mtime changes — so
+# the browser can keep the file in its normal cache between edits (using
+# 304s), and the token flips the instant you save.
 BUSTED = ("detector.js", "app.js")
+_BUST_STATE = (0.0, "")  # (max_mtime, token)
+
+
+def _bust_token():
+    global _BUST_STATE
+    mt = max(os.path.getmtime(os.path.join(ROOT, n)) for n in BUSTED)
+    if _BUST_STATE[0] == mt:
+        return _BUST_STATE[1]
+    h = hashlib.md5()
+    for n in BUSTED:
+        with open(os.path.join(ROOT, n), "rb") as fh:
+            h.update(fh.read())
+    _BUST_STATE = (mt, h.hexdigest()[:10])
+    return _BUST_STATE[1]
 
 # Sample image: fetched server-side from the clean origin URL (no binary is
 # committed to the repo, and no third-party image proxy is used) and served
@@ -39,9 +56,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().__init__(*a, directory=ROOT, **kw)
 
     def end_headers(self):
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("Expires", "0")
+        # normal cache headers — the mtime-based ?v= token handles invalidation,
+        # so the browser can serve 304s instead of re-downloading on every refresh.
+        self.send_header("Cache-Control", "max-age=0, must-revalidate")
         super().end_headers()
 
     def do_GET(self):
@@ -65,7 +82,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def _serve_index(self):
-        token = f"{int(time.time())}-{os.getpid()}"
+        token = _bust_token()
         try:
             with open(os.path.join(ROOT, "index.html"), "r", encoding="utf-8") as fh:
                 html = fh.read()
@@ -85,5 +102,5 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     socketserver.TCPServer.allow_reuse_address = True
     with socketserver.TCPServer(("0.0.0.0", PORT), Handler) as httpd:
-        print(f"Serving on http://0.0.0.0:{PORT} (no-store + per-request cache-bust)")
+        print(f"Serving on http://0.0.0.0:{PORT} (mtime-based cache-bust)")
         httpd.serve_forever()

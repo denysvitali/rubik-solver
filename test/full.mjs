@@ -28,4 +28,4 @@ function line(a,b,c){const st=Math.max(Math.abs(b.x-a.x),Math.abs(b.y-a.y))|0;fo
 const FC=[[255,0,255],[0,220,255],[255,220,0]];
 faces.forEach((f,fi)=>{const q=f.corners;for(let i=0;i<4;i++)line(q[i],q[(i+1)%4],FC[fi%3]);});
 if(wf)for(const pt of [wf.near,...wf.ring])for(let dy=-7;dy<=7;dy++)for(let dx=-7;dx<=7;dx++)if(dx*dx+dy*dy<=49)p(pt.x+dx,pt.y+dy,[255,0,0]);
-fs.writeFileSync(new URL("../detected.jpg",import.meta.url),jpeg.encode({data:o,width:W,height:H},92).data);
+fs.writeFileSync(new URL("../tmp/full.jpg",import.meta.url),jpeg.encode({data:o,width:W,height:H},92).data);

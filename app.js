@@ -3,6 +3,18 @@
 (() => {
   "use strict";
 
+  // ---- URL-flag dev shortcuts: bookmark
+  //   ?debug=1&autorun=1&img=sample.jpg
+  // to skip the 4-click ritual per iteration.
+  const Q = new URLSearchParams(location.search);
+  const URL_DEBUG = Q.has("debug");
+  const URL_AUTORUN = Q.has("autorun");
+  const URL_IMG = Q.get("img");
+  if (URL_DEBUG) {
+    $("debugDetails") && ($("debugDetails").hidden = false);
+    $("logDetails") && ($("logDetails").open = true);
+  }
+
   const $ = (id) => document.getElementById(id);
   const statusEl = $("status");
   const overlay = $("overlay");
@@ -20,15 +32,21 @@
   const canvasWrap = $("canvasWrap");
   const appLogEl = $("appLog");
   const logLines = [];
-  let cvReady = false;
-  let srcImg = null;     // HTMLImageElement currently loaded
-  let lastFace = null;   // last detected face (for copy-to-clipboard)
-  let lastFaces = [];    // all detected faces (multi-face)
-  let pickMode = false;  // manual corner-picking active
-  let pickPts = [];      // clicked corners in full-resolution coords
-  let wireframe = null;  // editable cube wireframe {near, ring[6], sideStart} (full-res)
-  let dragIdx = null;    // which handle is being dragged: "near" | 0..5
-  let ortSession = null, ortLoading = null, modelStatus = "idle";
+  // Mutable state bag. Grouped so we never accidentally shadow another
+  // module-level let when reading from a closure.
+  const state = {
+    cvReady: false,
+    srcImg: null,       // HTMLImageElement currently loaded
+    lastFace: null,     // last detected face (for copy-to-clipboard)
+    lastFaces: [],      // all detected faces (multi-face)
+    pickMode: false,    // manual corner-picking active
+    pickPts: [],        // clicked corners in full-resolution coords
+    wireframe: null,    // editable cube wireframe {near, ring[6], sideStart} (full-res)
+    dragIdx: null,      // which handle is being dragged: "near" | 0..5
+    ortSession: null,
+    ortLoading: null,
+    modelStatus: "idle",
+  };
 
   function appLog(msg) {
     const ts = new Date().toLocaleTimeString();
@@ -69,14 +87,14 @@
   const COLORS = RubikDetector.COLORS;
 
   const enableActions = () => {
-    const on = cvReady && srcImg;
+    const on = state.cvReady && state.srcImg;
     detectBtn.disabled = !on;
     pickBtn.disabled = !on;
   };
 
   // ---- OpenCV load handling ----
   function onCvReady() {
-    cvReady = true;
+    state.cvReady = true;
     statusEl.textContent = "OpenCV ready";
     statusEl.classList.add("ready");
     enableActions();
@@ -99,34 +117,38 @@
   }
   waitForCv();
 
+  // Apply ?autorun=1&img=foo.jpg URL flag (combined with ?debug=1&log=1 at the top)
+  if (URL_AUTORUN || URL_IMG) {
+    setTimeout(() => loadImageFromSrc(URL_IMG || "sample.jpg"), 50);
+  }
+
   // ---- Image loading ----
   function loadImageFromSrc(src) {
-    console.log("[load] loadImageFromSrc called, src type:", src.substring(0, 40));
     // Immediate feedback: show loading state so the user knows something is happening.
     statusEl.innerHTML = '<span class="spinner"></span> Loading image…';
     statusEl.classList.remove("ready");
     detectBtn.disabled = true;
     pickBtn.disabled = true;
     canvasWrap.classList.add("loading");
+    if (URL_DEBUG) appLog(`[load] ${src.substring(0, 60)}`);
 
     // For file blobs, read via FileReader → data URL (most compatible across browsers).
     // For remote/same-origin URLs, load directly with Image().
     const finish = (dataUrl) => {
-      console.log("[load] finish() called, dataUrl length:", dataUrl?.length);
       const img = new Image();
       img.onload = () => {
-        console.log("[load] img.onload fired, size:", img.naturalWidth, "x", img.naturalHeight);
-        srcImg = img;
+        if (URL_DEBUG) appLog(`[load] ${img.naturalWidth}x${img.naturalHeight}`);
+        state.state.srcImg = img;
         cancelPick();
-        wireframe = null; dragIdx = null;
+        state.state.wireframe = null; state.state.dragIdx = null;
         canvasWrap.classList.remove("loading");
         drawBase();
         enableActions();
-        statusEl.textContent = cvReady ? "OpenCV ready — image loaded" : "Loading OpenCV…";
-        statusEl.classList.toggle("ready", cvReady);
+        statusEl.textContent = state.state.cvReady ? "OpenCV ready — image loaded" : "Loading OpenCV…";
+        statusEl.classList.toggle("ready", state.state.cvReady);
       };
       img.onerror = (e) => {
-        console.error("[load] img.onerror fired:", e);
+        console.error("img.onerror", e);
         canvasWrap.classList.remove("loading");
         statusEl.textContent = "Failed to load image";
         enableActions();
@@ -135,32 +157,23 @@
     };
 
     if (src.startsWith("blob:")) {
-      console.log("[load] blob URL detected, using FileReader path");
-      fetch(src).then(r => {
-        console.log("[load] fetch ok, status:", r.status);
-        return r.blob();
-      }).then(blob => {
-        console.log("[load] blob ok, size:", blob.size, "type:", blob.type);
+      fetch(src).then(r => r.blob()).then(blob => {
         const reader = new FileReader();
-        reader.onload = () => {
-          console.log("[load] FileReader ok, result length:", reader.result?.length);
-          finish(reader.result);
-        };
+        reader.onload = () => finish(reader.result);
         reader.onerror = (e) => {
-          console.error("[load] FileReader error:", e);
+          console.error("FileReader error", e);
           canvasWrap.classList.remove("loading");
           statusEl.textContent = "Failed to read image";
           enableActions();
         };
         reader.readAsDataURL(blob);
       }).catch((e) => {
-        console.error("[load] fetch/Reader error:", e);
+        console.error("fetch/Reader error", e);
         canvasWrap.classList.remove("loading");
         statusEl.textContent = "Failed to load image";
         enableActions();
       });
     } else {
-      console.log("[load] non-blob URL, loading directly");
       finish(src);
     }
   }
@@ -168,10 +181,10 @@
   // Draw the image into the (display-sized) overlay canvas.
   function drawBase() {
     const maxW = 520;
-    const scale = Math.min(1, maxW / srcImg.naturalWidth);
-    overlay.width = Math.round(srcImg.naturalWidth * scale);
-    overlay.height = Math.round(srcImg.naturalHeight * scale);
-    overlay.getContext("2d").drawImage(srcImg, 0, 0, overlay.width, overlay.height);
+    const scale = Math.min(1, maxW / state.srcImg.naturalWidth);
+    overlay.width = Math.round(state.srcImg.naturalWidth * scale);
+    overlay.height = Math.round(state.srcImg.naturalHeight * scale);
+    overlay.getContext("2d").drawImage(state.srcImg, 0, 0, overlay.width, overlay.height);
   }
 
   // Full-resolution RGBA Mat of the original image (detection input). Drawing
@@ -179,17 +192,15 @@
   // of how big the canvas happens to be shown.
   function fullResMat() {
     const off = document.createElement("canvas");
-    off.width = srcImg.naturalWidth;
-    off.height = srcImg.naturalHeight;
-    off.getContext("2d").drawImage(srcImg, 0, 0);
+    off.width = state.srcImg.naturalWidth;
+    off.height = state.srcImg.naturalHeight;
+    off.getContext("2d").drawImage(state.srcImg, 0, 0);
     return cv.imread(off);
   }
 
   fileInput.addEventListener("change", (e) => {
     const f = e.target.files[0];
-    console.log("[file] change event, files:", e.target.files.length, "name:", f?.name, "size:", f?.size);
     if (f) loadImageFromSrc(URL.createObjectURL(f));
-    else console.warn("[file] change event but no file!");
   });
 
   // Test hook: load an arbitrary same-origin image (used by the headless harness)
@@ -201,15 +212,13 @@
     e.preventDefault();
     drop.classList.remove("drag");
     const f = e.dataTransfer.files[0];
-    console.log("[drop] drop event, files:", e.dataTransfer.files.length, "name:", f?.name, "size:", f?.size);
     if (f) loadImageFromSrc(URL.createObjectURL(f));
-    else console.warn("[drop] drop event but no file!");
   });
 
   sampleBtn.addEventListener("click", () => loadImageFromSrc("sample.jpg"));
 
   detectBtn.addEventListener("click", () => {
-    if (!cvReady || !srcImg) return;
+    if (!state.state.cvReady || !state.state.srcImg) return;
     detectBtn.disabled = true;
     statusEl.innerHTML = '<span class="spinner"></span> Detecting…';
     setTimeout(async () => {
@@ -232,17 +241,17 @@
   // Cleanly isolates the whole cube (incl. white pieces) from hand/background —
   // a far better silhouette seed than colour thresholds. Loaded lazily.
   function ensureModel() {
-    if (ortSession) return Promise.resolve(ortSession);
-    if (!window.ort) { modelStatus = "onnxruntime-web not loaded (ort missing)"; return Promise.resolve(null); }
-    if (!ortLoading) {
-      modelStatus = "loading…";
+    if (state.ortSession) return Promise.resolve(state.ortSession);
+    if (!window.ort) { state.modelStatus = "onnxruntime-web not loaded (ort missing)"; return Promise.resolve(null); }
+    if (!state.ortLoading) {
+      state.modelStatus = "loading…";
       try { ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/"; } catch (_) {}
       const MODEL_URL = "https://huggingface.co/tomjackson2023/rembg/resolve/main/u2netp.onnx";
-      ortLoading = ort.InferenceSession.create(MODEL_URL)
-        .then((s) => { ortSession = s; modelStatus = "ready"; return s; })
-        .catch((e) => { console.error("cube model load failed", e); modelStatus = "load failed: " + (e && e.message || e); return null; });
+      state.ortLoading = ort.InferenceSession.create(MODEL_URL)
+        .then((s) => { state.ortSession = s; state.modelStatus = "ready"; return s; })
+        .catch((e) => { console.error("cube model load failed", e); state.modelStatus = "load failed: " + (e && e.message || e); return null; });
     }
-    return ortLoading;
+    return state.ortLoading;
   }
   async function segmentCube(full) {
     const sess = await ensureModel();
@@ -266,10 +275,10 @@
 
   // ---- Manual corner picking (for angled / multi-face photos) ----
   pickBtn.addEventListener("click", () => {
-    if (!cvReady || !srcImg) return;
-    if (pickMode) { cancelPick(); return; }
-    pickMode = true;
-    pickPts = [];
+    if (!state.cvReady || !state.srcImg) return;
+    if (state.pickMode) { cancelPick(); return; }
+    state.pickMode = true;
+    state.pickPts = [];
     pickBtn.textContent = "Cancel";
     statusEl.textContent = "Click corner 1 of 4 (any face, in order around it)";
     statusEl.classList.remove("ready");
@@ -277,21 +286,21 @@
   });
 
   function cancelPick() {
-    pickMode = false;
-    pickPts = [];
+    state.pickMode = false;
+    state.pickPts = [];
     if (pickBtn) pickBtn.textContent = "Pick corners";
   }
 
   overlay.addEventListener("click", (e) => {
-    if (!pickMode || !srcImg) return;
+    if (!state.pickMode || !state.srcImg) return;
     const rect = overlay.getBoundingClientRect();
     const cx = (e.clientX - rect.left) * (overlay.width / rect.width);
     const cy = (e.clientY - rect.top) * (overlay.height / rect.height);
-    const ds = overlay.width / srcImg.naturalWidth;         // display → full-res
-    pickPts.push({ x: cx / ds, y: cy / ds });
+    const ds = overlay.width / state.srcImg.naturalWidth;         // display → full-res
+    state.pickPts.push({ x: cx / ds, y: cy / ds });
     drawPickProgress(ds);
-    if (pickPts.length < 4) {
-      statusEl.textContent = `Click corner ${pickPts.length + 1} of 4`;
+    if (state.pickPts.length < 4) {
+      statusEl.textContent = `Click corner ${state.pickPts.length + 1} of 4`;
     } else {
       finishPick();
     }
@@ -304,12 +313,12 @@
     ctx.strokeStyle = "rgba(255,61,240,0.9)";
     ctx.lineWidth = 2;
     ctx.beginPath();
-    pickPts.forEach((p, i) => {
+    state.pickPts.forEach((p, i) => {
       const x = p.x * ds, y = p.y * ds;
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
-    if (pickPts.length > 1) ctx.stroke();
-    for (const p of pickPts) {
+    if (state.pickPts.length > 1) ctx.stroke();
+    for (const p of state.pickPts) {
       ctx.beginPath();
       ctx.arc(p.x * ds, p.y * ds, 4, 0, Math.PI * 2);
       ctx.fill();
@@ -317,7 +326,7 @@
   }
 
   function finishPick() {
-    const corners = pickPts.slice(); // snapshot before cancelPick() clears it
+    const corners = state.pickPts.slice(); // snapshot before cancelPick() clears it
     cancelPick();
     statusEl.innerHTML = '<span class="spinner"></span> Warping & reading face…';
     setTimeout(() => {
@@ -325,13 +334,13 @@
         const full = fullResMat();
         const face = RubikDetector.sampleQuad(cv, full, corners);
         full.delete();
-        lastFace = face;
-        const ds = overlay.width / srcImg.naturalWidth;
+        state.lastFace = face;
+        const ds = overlay.width / state.srcImg.naturalWidth;
         drawQuadOverlay(face, ds);
         renderFaces(face);
         renderLegend();
         diag.textContent =
-          `source: ${srcImg.naturalWidth}x${srcImg.naturalHeight}` +
+          `source: ${state.srcImg.naturalWidth}x${state.srcImg.naturalHeight}` +
           `\nmethod: manual corners (perspective warp)`;
         statusEl.textContent = "Detection complete (manual)";
         statusEl.classList.add("ready");
@@ -381,9 +390,9 @@
   // ---- Run shared detector, then render ----
   async function runDetection() {
     cancelPick();
-    wireframe = null; dragIdx = null;
+    state.wireframe = null; state.dragIdx = null;
     const full = fullResMat();
-    const ds = overlay.width / srcImg.naturalWidth;
+    const ds = overlay.width / state.srcImg.naturalWidth;
 
     showProgress(10, "Preparing image…");
     await new Promise((r) => requestAnimationFrame(r)); // let the UI paint
@@ -413,21 +422,21 @@
     renderDebug(debug);
     if (faces.length > 0) {
       full.delete();
-      lastFaces = faces.map((f) => f.face);
-      lastFace = lastFaces[0];
-      wireframe = (geometric && faces[0] && faces[0].wireframe) ? faces[0].wireframe : null;
-      dragIdx = null;
+      state.lastFaces = faces.map((f) => f.face);
+      state.lastFace = state.lastFaces[0];
+      state.wireframe = (geometric && faces[0] && faces[0].state.wireframe) ? faces[0].state.wireframe : null;
+      state.dragIdx = null;
       drawMultiOverlay(faces, ds);
-      if (wireframe) drawHandles(ds);
+      if (state.wireframe) drawHandles(ds);
       renderMultiFaces(faces);
       renderLegend();
       diag.textContent =
-        `source: ${srcImg.naturalWidth}x${srcImg.naturalHeight}` +
+        `source: ${state.srcImg.naturalWidth}x${state.srcImg.naturalHeight}` +
         `\nmethod: ${geometric ? "auto multi-face (geometric silhouette)" : "auto multi-face (sticker grid)"}` +
-        (geometric ? `\nsilhouette: ${faces[0].silhouette || "?"}  |  model: ${modelStatus}` : "") +
+        (geometric ? `\nsilhouette: ${faces[0].silhouette || "?"}  |  model: ${state.modelStatus}` : "") +
         `\nfaces detected: ${faces.length}` +
         faces.map((f, i) => `\n  face ${i + 1}: ${f.method || "grid"}`).join("") +
-        (wireframe ? "\n→ drag the 7 dots to refine the fit" : "");
+        (state.wireframe ? "\n→ drag the 7 dots to refine the fit" : "");
       hideProgress();
       return;
     }
@@ -436,8 +445,8 @@
     showProgress(70, "Trying single-face fallback…");
     const result = RubikDetector.detectCube(cv, full);
     full.delete();
-    lastFace = result.face;
-    lastFaces = [result.face];
+    state.lastFace = result.face;
+    state.lastFaces = [result.face];
     showProgress(95, "Rendering result…");
 
     if (result.method === "grid" && result.corners) {
@@ -452,7 +461,7 @@
       ? `\nface region: ${Math.round(result.region.w)}x${Math.round(result.region.h)} @(${Math.round(result.region.x)},${Math.round(result.region.y)})`
       : `\nface: perspective-correct corners`;
     diag.textContent =
-      `source: ${srcImg.naturalWidth}x${srcImg.naturalHeight}` +
+      `source: ${state.srcImg.naturalWidth}x${state.srcImg.naturalHeight}` +
       `\nwork: ${result.workSize.w}x${result.workSize.h} (fixed)` +
       `\nmethod: ${result.method} (single-face fallback)` +
       `\nvivid squares: ${result.squareCount}` +
@@ -497,12 +506,12 @@
     });
   }
 
-  // ---- Editable wireframe: drag the 7 handles (near-corner + 6 outer) ----
+  // ---- Editable state.wireframe: drag the 7 handles (near-corner + 6 outer) ----
   function wfHandles() {
-    return wireframe ? [{ id: "near", p: wireframe.near }, ...wireframe.ring.map((p, i) => ({ id: i, p }))] : [];
+    return state.wireframe ? [{ id: "near", p: state.wireframe.near }, ...state.wireframe.ring.map((p, i) => ({ id: i, p }))] : [];
   }
   function drawHandles(ds) {
-    if (!wireframe) return;
+    if (!state.wireframe) return;
     const ctx = overlay.getContext("2d");
     for (const h of wfHandles()) {
       const x = h.p.x * ds, y = h.p.y * ds;
@@ -515,44 +524,44 @@
     const rect = overlay.getBoundingClientRect();
     const cx = (e.clientX - rect.left) * (overlay.width / rect.width);
     const cy = (e.clientY - rect.top) * (overlay.height / rect.height);
-    const ds = overlay.width / srcImg.naturalWidth;
+    const ds = overlay.width / state.srcImg.naturalWidth;
     return { x: cx / ds, y: cy / ds, ds };
   }
-  function setHandle(id, p) { if (id === "near") wireframe.near = p; else wireframe.ring[id] = p; }
+  function setHandle(id, p) { if (id === "near") state.wireframe.near = p; else state.wireframe.ring[id] = p; }
   // live redraw during drag (geometry only, no re-sampling)
   function redrawWireframe(ds) {
-    const faces = RubikDetector.facesFromWireframe(null, null, wireframe);
+    const faces = RubikDetector.facesFromWireframe(null, null, state.wireframe);
     drawMultiOverlay(faces, ds);
     drawHandles(ds);
   }
   function resampleWireframe() {
     const full = fullResMat();
-    const faces = RubikDetector.facesFromWireframe(cv, full, wireframe);
+    const faces = RubikDetector.facesFromWireframe(cv, full, state.wireframe);
     full.delete();
-    lastFaces = faces.map((f) => f.face);
-    lastFace = lastFaces[0];
-    const ds = overlay.width / srcImg.naturalWidth;
+    state.lastFaces = faces.map((f) => f.face);
+    state.lastFace = state.lastFaces[0];
+    const ds = overlay.width / state.srcImg.naturalWidth;
     drawMultiOverlay(faces, ds);
     drawHandles(ds);
     renderMultiFaces(faces);
   }
   overlay.addEventListener("mousedown", (e) => {
-    if (pickMode || !wireframe) return;
+    if (state.pickMode || !state.wireframe) return;
     const { x, y, ds } = fullPt(e);
     const thresh = 14 / ds; // ~14 display px
     let bestId = null, bestD = thresh;
     for (const h of wfHandles()) { const d = Math.hypot(h.p.x - x, h.p.y - y); if (d < bestD) { bestD = d; bestId = h.id; } }
-    if (bestId !== null) { dragIdx = bestId; e.preventDefault(); }
+    if (bestId !== null) { state.dragIdx = bestId; e.preventDefault(); }
   });
   overlay.addEventListener("mousemove", (e) => {
-    if (dragIdx === null || !wireframe) return;
+    if (state.dragIdx === null || !state.wireframe) return;
     const { x, y, ds } = fullPt(e);
-    setHandle(dragIdx, { x, y });
+    setHandle(state.dragIdx, { x, y });
     redrawWireframe(ds);
   });
   window.addEventListener("mouseup", () => {
-    if (dragIdx === null) return;
-    dragIdx = null;
+    if (state.dragIdx === null) return;
+    state.dragIdx = null;
     try { resampleWireframe(); } catch (err) { console.error(err); }
   });
 

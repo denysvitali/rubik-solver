@@ -1,10 +1,16 @@
 {
   "name": "rubik-solver",
   "version": "1.0.0",
-  "description": "",
-  "main": "app.js",
+  "description": "Browser-based Rubik's cube face detector (OpenCV.js, no build step)",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "serve": "python3 server.py",
+    "check": "node scripts/check.mjs",
+    "watch": "node scripts/watch.mjs",
+    "detect": "node test/detect.mjs sample.jpg",
+    "harness": "node test/harness.mjs tmp/shot.png sample.jpg",
+    "full": "node test/full.mjs sample.jpg",
+    "alt": "node test/altcheck.mjs sample.jpg",
+    "warp": "node test/faceswarp.mjs sample.jpg"
   },
   "keywords": [],
   "author": "",
