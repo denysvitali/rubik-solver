@@ -237,7 +237,8 @@
     if (!ortLoading) {
       modelStatus = "loading…";
       try { ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/"; } catch (_) {}
-      ortLoading = ort.InferenceSession.create("u2netp.onnx")
+      const MODEL_URL = "https://huggingface.co/tomjackson2023/rembg/resolve/main/u2netp.onnx";
+      ortLoading = ort.InferenceSession.create(MODEL_URL)
         .then((s) => { ortSession = s; modelStatus = "ready"; return s; })
         .catch((e) => { console.error("cube model load failed", e); modelStatus = "load failed: " + (e && e.message || e); return null; });
     }
