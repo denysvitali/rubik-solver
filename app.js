@@ -6,6 +6,7 @@
   // ---- URL-flag dev shortcuts: bookmark
   //   ?debug=1&autorun=1&img=sample.jpg
   // to skip the 4-click ritual per iteration.
+  const $ = (id) => document.getElementById(id);
   const Q = new URLSearchParams(location.search);
   const URL_DEBUG = Q.has("debug");
   const URL_AUTORUN = Q.has("autorun");
@@ -15,7 +16,6 @@
     $("logDetails") && ($("logDetails").open = true);
   }
 
-  const $ = (id) => document.getElementById(id);
   const statusEl = $("status");
   const overlay = $("overlay");
   const fileInput = $("file");
@@ -117,11 +117,6 @@
   }
   waitForCv();
 
-  // Apply ?autorun=1&img=foo.jpg URL flag (combined with ?debug=1&log=1 at the top)
-  if (URL_AUTORUN || URL_IMG) {
-    setTimeout(() => loadImageFromSrc(URL_IMG || "sample.jpg"), 50);
-  }
-
   // ---- Image loading ----
   function loadImageFromSrc(src) {
     // Immediate feedback: show loading state so the user knows something is happening.
@@ -176,6 +171,11 @@
     } else {
       finish(src);
     }
+  }
+
+  // Apply ?autorun=1&img=foo.jpg URL flag (combined with ?debug=1 at the top)
+  if (URL_AUTORUN || URL_IMG) {
+    setTimeout(() => loadImageFromSrc(URL_IMG || "sample.jpg"), 50);
   }
 
   // Draw the image into the (display-sized) overlay canvas.
