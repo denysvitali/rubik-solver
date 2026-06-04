@@ -102,17 +102,29 @@
   }
 
   function waitForCv() {
+    let attempts = 0;
+    const failCv = (err) => {
+      statusEl.textContent = "Failed to load OpenCV";
+      console.error("OpenCV did not initialize", err || "");
+    };
+    const resolveCv = (loader) => {
+      loader.then((real) => { window.cv = real; onCvReady(); }, failCv);
+    };
     if (window.cv && typeof cv.then === "function") {
-      cv.then((real) => { window.cv = real; onCvReady(); });
+      resolveCv(cv);
       return;
     }
     if (window.cv && cv.Mat) { onCvReady(); return; }
     if (window.cv) cv["onRuntimeInitialized"] = onCvReady;
     const t = setInterval(() => {
       if (window.cv && typeof cv.then === "function") {
-        clearInterval(t); cv.then((real) => { window.cv = real; onCvReady(); }); return;
+        clearInterval(t); resolveCv(cv); return;
       }
       if (window.cv && cv.Mat) { clearInterval(t); onCvReady(); }
+      if (++attempts >= 150) {
+        clearInterval(t);
+        failCv();
+      }
     }, 100);
   }
   waitForCv();
