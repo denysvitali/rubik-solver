@@ -599,35 +599,38 @@
         const fw = Math.min(W0 - fx, Math.round(anchorBox.w * inv));
         const fh = Math.min(H0 - fy, Math.round(anchorBox.h * inv));
         if (fw > 50 && fh > 50) {
-          const crop = src.roi(new cv.Rect(fx, fy, fw, fh));
-          // Detect stickers in the crop at WORK_WIDTH resolution
-          const cropScale = WORK_WIDTH / fw;
-          const cw = Math.max(1, Math.round(fw * cropScale));
-          const ch = Math.max(1, Math.round(fh * cropScale));
-          const cropWork = new cv.Mat();
-          cv.resize(crop, cropWork, new cv.Size(cw, ch), 0, 0, cv.INTER_AREA);
-          const cropSquares = findStickerSquares(cv, cropWork, cw * ch);
-          // Adjust sticker coords to full-res (crop coords + crop offset)
-          const adjSquares = cropSquares.map((s) => ({
-            cx: s.cx / cropScale + fx,
-            cy: s.cy / cropScale + fy,
-            side: s.side / cropScale,
-            rect: { x: s.rect.x / cropScale + fx, y: s.rect.y / cropScale + fy, width: s.rect.width / cropScale, height: s.rect.height / cropScale },
-          }));
-          // Grid fit uses coords in arbitrary space — pass them as-is and
-          // the corners will be in full-res space already
-          if (adjSquares.length >= 5) {
-            const adjClusters = clusterStickers(adjSquares);
-            for (const cluster of adjClusters) {
-              if (cluster.length < 5) continue;
-              const grid = fitGrid(cluster);
-              if (grid) {
-                gridResult = { corners: grid.corners, cluster, stickerCount: cluster.length };
-                break;
+          // Wrap the leak-prone crop+resize block in withMats so the
+          // intermediate Mats cannot leak on throw.
+          withMats(cv, () => {
+            const crop = src.roi(new cv.Rect(fx, fy, fw, fh));
+            // Detect stickers in the crop at WORK_WIDTH resolution
+            const cropScale = WORK_WIDTH / fw;
+            const cw = Math.max(1, Math.round(fw * cropScale));
+            const ch = Math.max(1, Math.round(fh * cropScale));
+            const cropWork = new cv.Mat();
+            cv.resize(crop, cropWork, new cv.Size(cw, ch), 0, 0, cv.INTER_AREA);
+            const cropSquares = findStickerSquares(cv, cropWork, cw * ch);
+            // Adjust sticker coords to full-res (crop coords + crop offset)
+            const adjSquares = cropSquares.map((s) => ({
+              cx: s.cx / cropScale + fx,
+              cy: s.cy / cropScale + fy,
+              side: s.side / cropScale,
+              rect: { x: s.rect.x / cropScale + fx, y: s.rect.y / cropScale + fy, width: s.rect.width / cropScale, height: s.rect.height / cropScale },
+            }));
+            // Grid fit uses coords in arbitrary space — pass them as-is and
+            // the corners will be in full-res space already
+            if (adjSquares.length >= 5) {
+              const adjClusters = clusterStickers(adjSquares);
+              for (const cluster of adjClusters) {
+                if (cluster.length < 5) continue;
+                const grid = fitGrid(cluster);
+                if (grid) {
+                  gridResult = { corners: grid.corners, cluster, stickerCount: cluster.length };
+                  break;
+                }
               }
             }
-          }
-          crop.delete(); cropWork.delete();
+          });
         }
       }
     }
@@ -956,25 +959,30 @@
     // vertical) sticker edges; the wrong one maps a face diagonal to the square
     // edge and rotates the stickers ~45°. Score = axis-aligned vs diagonal
     // gradient energy of the warped faces; pick the higher.
-    const altScore = (ss2) => {
+    // Optimization: warp the 900-wide `work` (not full-res `src`) — the score
+    // is a relative ranking so the slight noise is fine, and the warps are
+    // ~6x faster on the smaller image.
+    const ringWork = V, nearWork = nearW;
+    const altScore = (ss2) => withMats(cv, () => {
       let tot = 0;
       for (let k = 0; k < 3; k++) {
         const a = (ss2 + 2 * k) % 6, b = (a + 1) % 6, c = (a + 2) % 6;
-        const q = [nearFull, ringFull[a], ringFull[b], ringFull[c]];
+        const q = [nearWork, ringWork[a], ringWork[b], ringWork[c]];
         const S = T.altScoreSize;
         const sT = cv.matFromArray(4, 1, cv.CV_32FC2, [q[0].x, q[0].y, q[1].x, q[1].y, q[2].x, q[2].y, q[3].x, q[3].y]);
         const dT = cv.matFromArray(4, 1, cv.CV_32FC2, [0, 0, S, 0, S, S, 0, S]);
-        const M = cv.getPerspectiveTransform(sT, dT); const w = new cv.Mat();
-        cv.warpPerspective(src, w, M, new cv.Size(S, S), cv.INTER_LINEAR, cv.BORDER_REPLICATE, new cv.Scalar());
+        const M = cv.getPerspectiveTransform(sT, dT);
+        const w = new cv.Mat();
+        cv.warpPerspective(work, w, M, new cv.Size(S, S), cv.INTER_LINEAR, cv.BORDER_REPLICATE, new cv.Scalar());
         const g = new cv.Mat(); cv.cvtColor(w, g, cv.COLOR_RGBA2GRAY);
-        const gx = new cv.Mat(), gy = new cv.Mat(); cv.Scharr(g, gx, cv.CV_32F, 1, 0); cv.Scharr(g, gy, cv.CV_32F, 0, 1);
+        const gx = new cv.Mat(), gy = new cv.Mat();
+        cv.Scharr(g, gx, cv.CV_32F, 1, 0); cv.Scharr(g, gy, cv.CV_32F, 0, 1);
         let axis = 0, diag = 0;
         for (let i = 0; i < S * S; i++) { const aa = Math.abs(gx.data32F[i]), bb = Math.abs(gy.data32F[i]); axis += Math.abs(aa - bb); diag += Math.min(aa, bb); }
         tot += axis / (diag + 1);
-        sT.delete(); dT.delete(); M.delete(); w.delete(); g.delete(); gx.delete(); gy.delete();
       }
       return tot;
-    };
+    });
     const sideStart = altScore(0) >= altScore(1) ? 0 : 1;
     const wireframe = { near: nearFull, ring: ringFull, sideStart };
     for (let k = 0; k < 3; k++) {

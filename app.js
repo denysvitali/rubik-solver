@@ -138,14 +138,14 @@
       const img = new Image();
       img.onload = () => {
         if (URL_DEBUG) appLog(`[load] ${img.naturalWidth}x${img.naturalHeight}`);
-        state.state.srcImg = img;
+        state.srcImg = img;
         cancelPick();
-        state.state.wireframe = null; state.state.dragIdx = null;
+        state.wireframe = null; state.dragIdx = null;
         canvasWrap.classList.remove("loading");
         drawBase();
         enableActions();
-        statusEl.textContent = state.state.cvReady ? "OpenCV ready — image loaded" : "Loading OpenCV…";
-        statusEl.classList.toggle("ready", state.state.cvReady);
+        statusEl.textContent = state.cvReady ? "OpenCV ready — image loaded" : "Loading OpenCV…";
+        statusEl.classList.toggle("ready", state.cvReady);
       };
       img.onerror = (e) => {
         console.error("img.onerror", e);
@@ -218,7 +218,7 @@
   sampleBtn.addEventListener("click", () => loadImageFromSrc("sample.jpg"));
 
   detectBtn.addEventListener("click", () => {
-    if (!state.state.cvReady || !state.state.srcImg) return;
+    if (!state.cvReady || !state.srcImg) return;
     detectBtn.disabled = true;
     statusEl.innerHTML = '<span class="spinner"></span> Detecting…';
     setTimeout(async () => {
@@ -424,7 +424,7 @@
       full.delete();
       state.lastFaces = faces.map((f) => f.face);
       state.lastFace = state.lastFaces[0];
-      state.wireframe = (geometric && faces[0] && faces[0].state.wireframe) ? faces[0].state.wireframe : null;
+      state.wireframe = (geometric && faces[0] && faces[0].wireframe) ? faces[0].wireframe : null;
       state.dragIdx = null;
       drawMultiOverlay(faces, ds);
       if (state.wireframe) drawHandles(ds);
