@@ -45,7 +45,7 @@ const CASES = [
     // (left), blue (right).
     solved: new Set(["R", "B", "W"]),
     failureMode:
-      "Method 1 (grid) corner solver picks a quad where one corner lands at y=−115 (off-screen). The warped 3×3 grid therefore samples across face boundaries — current output is B W B / W W B / R R B. Fix: clamp corners to the image bounds before warping, or reject quads with any corner outside the image.",
+      "Method 1 (grid) PCA-on-direction-vectors found the parallelogram DIAGONALS of the tilted face (not the row/column sides), so the (u,v) grid's corners landed at the diagonal extremes — one corner at y=−115 off-screen. The warped 3×3 then sampled across face boundaries, returning R W B / R W W / R B B. Fix: use each sticker's e1/e2 edge vectors (set in findStickerSquares from approxPolyDP) as the (u,v) axes — they're the 2D projections of the face's actual grid-aligned edges. Plus: colorGroup the cluster first (9R/8W/7B for this image) so solved-cube single-colour faces take the fast path without kmeans.",
   },
   {
     name: "rubik-cube-algorithms (saymedia)",

@@ -360,42 +360,86 @@
     for (const s of stickers) { mx += s.cx; my += s.cy; }
     mx /= n; my /= n;
 
-    // 2. Find the two grid axes from nearest-neighbor directions.
-    //    For each sticker, compute the direction to its nearest neighbor.
-    //    Collect these as unit vectors. PCA on the vectors (not positions)
-    //    finds the two dominant directions, which are the grid axes.
-    const vecs = [];
-    for (let i = 0; i < n; i++) {
-      let bestD = Infinity, bestS = null;
-      for (let j = 0; j < n; j++) {
-        if (i === j) continue;
-        const d = Math.hypot(stickers[i].cx - stickers[j].cx, stickers[i].cy - stickers[j].cy);
-        if (d < bestD) { bestD = d; bestS = stickers[j]; }
+    // 2. Find the two grid axes. We have two candidate sources:
+    //    (a) PCA on nearest-neighbour direction vectors — finds the
+    //        parallelogram DIAGONALS for a tilted face (not the row/col
+    //        sides), which puts the (u,v) grid's corners at the diagonal
+    //        extremes rather than the face corners.
+    //    (b) the stickers' OWN edge vectors e1, e2 (set in
+    //        findStickerSquares from each sticker's approxPolyDP corners).
+    //        These are the 2D projections of the sticker's grid-aligned
+    //        edges, so the AVERAGE e1/e2 across the cluster IS the
+    //        face's row/column direction. For a tilted 3-face cube the
+    //        9 red stickers' averaged e1 points along the red face's row
+    //        direction — using it as the (u) axis puts the warped grid
+    //        exactly on the face. e2 is used for the (v) axis.
+    //
+    //    We average e1/e2 with sign-correction against the first
+    //    sticker's e1/e2: a sticker whose e1 points opposite to the
+    //    first is flipped (and its e2 is flipped too — both belong to
+    //    the same face coordinate frame). If the average has too small
+    //    a magnitude the e1/e2 source is inconsistent for this cluster
+    //    and we fall back to PCA.
+    const ref = stickers[0];
+    let e1xSum = 0, e1ySum = 0, e2xSum = 0, e2ySum = 0, eCount = 0;
+    if (ref && ref.e1 && ref.e2) {
+      for (const s of stickers) {
+        if (!s.e1 || !s.e2) continue;
+        let e1x = s.e1.x, e1y = s.e1.y;
+        let e2x = s.e2.x, e2y = s.e2.y;
+        if (e1x * ref.e1.x + e1y * ref.e1.y < 0) {
+          e1x = -e1x; e1y = -e1y; e2x = -e2x; e2y = -e2y;
+        }
+        e1xSum += e1x; e1ySum += e1y; e2xSum += e2x; e2ySum += e2y;
+        eCount++;
       }
-      if (!bestS) continue;
-      const dx = bestS.cx - stickers[i].cx, dy = bestS.cy - stickers[i].cy;
-      const len = Math.hypot(dx, dy);
-      if (len > 0) vecs.push({ x: dx / len, y: dy / len });
     }
-    if (vecs.length < 4) return null;
-
-    // PCA on the direction vectors to find the two dominant perpendicular directions
-    let vxx = 0, vxy = 0, vyy = 0;
-    for (const v of vecs) { vxx += v.x * v.x; vxy += v.x * v.y; vyy += v.y * v.y; }
-    const vtrace = vxx + vyy;
-    const vdet = vxx * vyy - vxy * vxy;
-    const vdisc = Math.sqrt(Math.max(0, vtrace * vtrace / 4 - vdet));
-    const vlam1 = vtrace / 2 + vdisc;
-    let ax1x, ax1y;
-    if (Math.abs(vxy) > 1e-6) {
-      ax1x = vxy; ax1y = vlam1 - vxx;
+    let ax1x, ax1y, ax2x, ax2y;
+    const e1Mag = eCount ? Math.hypot(e1xSum, e1ySum) / eCount : 0;
+    if (eCount >= 5 && e1Mag > 0.5) {
+      // Stickers' e1/e2 are consistent — use them as the (u,v) axes.
+      ax1x = e1xSum / eCount; ax1y = e1ySum / eCount;
+      ax2x = e2xSum / eCount; ax2y = e2ySum / eCount;
+      const a1n = Math.hypot(ax1x, ax1y) || 1;
+      ax1x /= a1n; ax1y /= a1n;
+      const a2n = Math.hypot(ax2x, ax2y) || 1;
+      ax2x /= a2n; ax2y /= a2n;
     } else {
-      ax1x = vxx >= vyy ? 1 : 0; ax1y = vxx >= vyy ? 0 : 1;
+      // Fallback: PCA on nearest-neighbour direction vectors. For a
+      // 3x3 grid, nearest-neighbour directions point along the rows
+      // and columns, so PCA recovers the axes (modulo the diagonal
+      // issue for tilted faces — accepted as a best-effort fallback
+      // when the e1/e2 source is unusable).
+      const vecs = [];
+      for (let i = 0; i < n; i++) {
+        let bestD = Infinity, bestS = null;
+        for (let j = 0; j < n; j++) {
+          if (i === j) continue;
+          const d = Math.hypot(stickers[i].cx - stickers[j].cx, stickers[i].cy - stickers[j].cy);
+          if (d < bestD) { bestD = d; bestS = stickers[j]; }
+        }
+        if (!bestS) continue;
+        const dx = bestS.cx - stickers[i].cx, dy = bestS.cy - stickers[i].cy;
+        const len = Math.hypot(dx, dy);
+        if (len > 0) vecs.push({ x: dx / len, y: dy / len });
+      }
+      if (vecs.length < 4) return null;
+      let vxx = 0, vxy = 0, vyy = 0;
+      for (const v of vecs) { vxx += v.x * v.x; vxy += v.x * v.y; vyy += v.y * v.y; }
+      const vtrace = vxx + vyy;
+      const vdet = vxx * vyy - vxy * vxy;
+      const vdisc = Math.sqrt(Math.max(0, vtrace * vtrace / 4 - vdet));
+      const vlam1 = vtrace / 2 + vdisc;
+      if (Math.abs(vxy) > 1e-6) {
+        ax1x = vxy; ax1y = vlam1 - vxx;
+      } else {
+        ax1x = vxx >= vyy ? 1 : 0; ax1y = vxx >= vyy ? 0 : 1;
+      }
+      const vnorm = Math.hypot(ax1x, ax1y);
+      if (vnorm < 1e-6) return null;
+      ax1x /= vnorm; ax1y /= vnorm;
+      ax2x = -ax1y; ax2y = ax1x;
     }
-    const vnorm = Math.hypot(ax1x, ax1y);
-    if (vnorm < 1e-6) return null;
-    ax1x /= vnorm; ax1y /= vnorm;
-    const ax2x = -ax1y, ax2y = ax1x;
 
     // 3. Project stickers onto both axes
     const proj = stickers.map((s) => ({
@@ -404,47 +448,82 @@
       v: (s.cx - mx) * ax2x + (s.cy - my) * ax2y,
     }));
 
-    // 4. Cluster projections into 3 groups along each axis
-    function cluster3(items, key) {
-      const sorted = [...items].sort((a, b) => a[key] - b[key]);
-      if (sorted.length < 3) return null;
-      const gaps = [];
-      for (let i = 1; i < sorted.length; i++) {
-        gaps.push({ gap: sorted[i][key] - sorted[i - 1][key], at: i });
+    // 4. Cluster projections into 3 groups along each axis. The previous
+    //    implementation split at the 2 largest gaps, but on a tilted
+    //    face's 9 stickers the 2 largest v-gaps are at the row extremes
+    //    (e.g. 87/54 instead of the true 68/71) and the split gives
+    //    6+2+1 instead of 3+3+3 — the grid's extrapolation then drifts
+    //    off the face. 1D k-means finds the 3 evenly-spaced centres
+    //    robustly for any sticker arrangement.
+    function kmeans1D(values, k) {
+      if (values.length < k) return null;
+      const sorted = [...values].sort((a, b) => a - b);
+      const span = sorted[sorted.length - 1] - sorted[0] || 1;
+      let centers = [];
+      for (let i = 0; i < k; i++) centers.push(sorted[0] + span * (i + 1) / (k + 1));
+      const assign = new Array(sorted.length).fill(0);
+      for (let it = 0; it < 20; it++) {
+        let changed = false;
+        for (let i = 0; i < sorted.length; i++) {
+          let best = 0, bestD = Infinity;
+          for (let c = 0; c < k; c++) { const d = Math.abs(sorted[i] - centers[c]); if (d < bestD) { bestD = d; best = c; } }
+          if (assign[i] !== best) { assign[i] = best; changed = true; }
+        }
+        const sums = Array.from({ length: k }, () => ({ s: 0, n: 0 }));
+        for (let i = 0; i < sorted.length; i++) { sums[assign[i]].s += sorted[i]; sums[assign[i]].n++; }
+        for (let c = 0; c < k; c++) if (sums[c].n) centers[c] = sums[c].s / sums[c].n;
+        if (!changed) break;
       }
-      gaps.sort((a, b) => b.gap - a.gap);
-      const split1 = Math.min(gaps[0].at, gaps[1].at);
-      const split2 = Math.max(gaps[0].at, gaps[1].at);
-      return [sorted.slice(0, split1), sorted.slice(split1, split2), sorted.slice(split2)];
+      centers.sort((a, b) => a - b);
+      return { centers, assign };
+    }
+    function cluster3(items, key) {
+      const values = items.map((it) => it[key]);
+      const km = kmeans1D(values, 3);
+      if (!km) return null;
+      // Reconstruct the 3 groups in the same order as the input items.
+      // The kmeans indices are over the SORTED values; map back via the
+      // original index on each item so we can return the items themselves.
+      const sortedIdx = items.map((_, i) => i).sort((a, b) => items[a][key] - items[b][key]);
+      const groups = Array.from({ length: 3 }, () => []);
+      for (let s = 0; s < sortedIdx.length; s++) {
+        groups[km.assign[s]].push(items[sortedIdx[s]]);
+      }
+      return groups;
     }
 
-    const colGroups = cluster3(proj, "u");
-    const rowGroups = cluster3(proj, "v");
-    if (!colGroups || !rowGroups) return null;
+    // The previous 1D k-means on u and v projections separately found wrong
+    // centres for a tilted face: the 9 v-projections don't form 3 evenly-
+    // spaced clusters (rows overlap in v when the face is sheared by
+    // perspective), so k-means converges to a local minimum that's even
+    // further from the true row/col means. Replacing with a deterministic
+    // sort-and-group:
+    //  - rows: sort the 9 stickers by v (perpendicular to the row
+    //    direction), group by 3. The 3 row means are then the v-means
+    //    of each group — exact, no clustering ambiguity.
+    //  - cols: for each row, sort its 3 stickers by u to assign column
+    //    index; the col means are then the u-means across all 3 rows.
+    const rowGroups = (() => {
+      const sorted = [...proj].sort((a, b) => a.v - b.v);
+      return [sorted.slice(0, 3), sorted.slice(3, 6), sorted.slice(6, 9)];
+    })();
+    if (!rowGroups.every((g) => g.length === 3)) return null;
+    const colGroups = [[], [], []];
+    for (const row of rowGroups) {
+      const sortedRow = [...row].sort((a, b) => a.u - b.u);
+      for (let c = 0; c < 3; c++) colGroups[c].push(sortedRow[c]);
+    }
+    if (!colGroups.every((g) => g.length === 3)) return null;
 
-    // 5. Validate: at least 2 groups per axis should be non-empty
-    const colSizes = colGroups.map((g) => g.length);
-    const rowSizes = rowGroups.map((g) => g.length);
-    if (colSizes.filter((s) => s > 0).length < 2 || rowSizes.filter((s) => s > 0).length < 2) return null;
+    // 5. Validate: every group should be non-empty (always true here, but
+    // keep the guard so a refactor doesn't silently produce a null group).
+    if (!colGroups.every((g) => g.length) || !rowGroups.every((g) => g.length)) return null;
 
     // 6. Compute group centers
-    const colCenters = colGroups.map((g) => g.length ? g.reduce((s, p) => s + p.u, 0) / g.length : null);
-    const rowCenters = rowGroups.map((g) => g.length ? g.reduce((s, p) => s + p.v, 0) / g.length : null);
+    const colCenters = colGroups.map((g) => g.reduce((s, p) => s + p.u, 0) / g.length);
+    const rowCenters = rowGroups.map((g) => g.reduce((s, p) => s + p.v, 0) / g.length);
 
-    // Fill missing centers by interpolation
-    for (let i = 0; i < 3; i++) {
-      if (colCenters[i] === null) {
-        if (i === 0 && colCenters[1] !== null && colCenters[2] !== null) colCenters[0] = 2 * colCenters[1] - colCenters[2];
-        else if (i === 1 && colCenters[0] !== null && colCenters[2] !== null) colCenters[1] = (colCenters[0] + colCenters[2]) / 2;
-        else if (i === 2 && colCenters[0] !== null && colCenters[1] !== null) colCenters[2] = 2 * colCenters[1] - colCenters[0];
-      }
-      if (rowCenters[i] === null) {
-        if (i === 0 && rowCenters[1] !== null && rowCenters[2] !== null) rowCenters[0] = 2 * rowCenters[1] - rowCenters[2];
-        else if (i === 1 && rowCenters[0] !== null && rowCenters[2] !== null) rowCenters[1] = (rowCenters[0] + rowCenters[2]) / 2;
-        else if (i === 2 && rowCenters[0] !== null && rowCenters[1] !== null) rowCenters[2] = 2 * rowCenters[1] - rowCenters[0];
-      }
-    }
-    if (colCenters.some((c) => c === null) || rowCenters.some((c) => c === null)) return null;
+    if (colCenters.some((c) => !Number.isFinite(c)) || rowCenters.some((c) => !Number.isFinite(c))) return null;
 
     // 7. Validate spacing uniformity
     const colGaps = [colCenters[1] - colCenters[0], colCenters[2] - colCenters[1]];
@@ -452,10 +531,20 @@
     if (Math.min(...colGaps) / Math.max(...colGaps) < T.grid.spacingRatioMin) return null;
     if (Math.min(...rowGaps) / Math.max(...rowGaps) < T.grid.spacingRatioMin) return null;
 
-    // 8. Compute face corners: extrapolate from outer grid positions
-    const avgSide = stickers.reduce((s, st) => s + st.side, 0) / n;
-    const borderU = avgSide * T.grid.borderK;
-    const borderV = avgSide * T.grid.borderK;
+    // 8. Compute face corners: extrapolate from outer grid positions. The
+    //    border is a FRACTION OF THE FACE SPAN, not a multiple of sticker
+    //    side — a tilted face's colSpan in (u,v) space is compressed by
+    //    perspective (often < 2*avgSide), so the old `0.55 * avgSide`
+    //    pushed the grid past the face boundary and the warped cell read
+    //    across the seam. Spanning 1/4 of the face on each side puts the
+    //    cell centres exactly on the outer sticker centres (the cell
+    //    grid is at 1/6, 1/2, 5/6 of the quad, and 1/6 of (span+2*span/4)
+    //    = 1/6*1.5*span = span/4 past the corner = the outer sticker
+    //    centre).
+    const colSpan = colCenters[2] - colCenters[0];
+    const rowSpan = rowCenters[2] - rowCenters[0];
+    const borderU = colSpan / 4;
+    const borderV = rowSpan / 4;
     const cornersUV = [
       { u: colCenters[0] - borderU, v: rowCenters[0] - borderV },
       { u: colCenters[2] + borderU, v: rowCenters[0] - borderV },
@@ -530,12 +619,21 @@
   // a sub-array of the input points). Used to split a multi-face cluster
   // into K groups in one shot, sidestepping the chained-2-means problem
   // where the first split's axis hides the second seam.
+  //
+  // Deterministic: uses a seeded mulberry32 PRNG instead of Math.random so
+  // the same input gives the same split on every run. The detector must
+  // be deterministic for the regression tests to be reliable.
   function kmeans2D(points, k, iters) {
     const n = points.length;
     if (n < k * 2) return [points];
-    // 1) k-means++ seeding — pick the first centroid at a stable spot
-    // (mean), then weight each subsequent pick by squared distance to the
-    // nearest already-chosen centroid (best expected SSE).
+    // mulberry32 — small, fast, good enough for kmeans seeding.
+    let seed = 0x9e3779b9;
+    const rand = () => {
+      seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
     let bestLabels = null, bestSSE = Infinity;
     for (let restart = 0; restart < 4; restart++) {
       const cents = [];
@@ -546,7 +644,7 @@
         const sys = points.map((p) => p.cy).sort((a, b) => a - b);
         cents.push({ cx: sxs[n >> 1], cy: sys[n >> 1] });
       } else {
-        cents.push(points[Math.floor(Math.random() * n)]);
+        cents.push(points[Math.floor(rand() * n)]);
       }
       while (cents.length < k) {
         const d2 = points.map((p) => {
@@ -555,7 +653,7 @@
           return best;
         });
         const sum = d2.reduce((a, b) => a + b, 0) || 1;
-        let r = Math.random() * sum;
+        let r = rand() * sum;
         let pick = 0;
         for (let i = 0; i < n; i++) { r -= d2[i]; if (r <= 0) { pick = i; break; } }
         cents.push({ cx: points[pick].cx, cy: points[pick].cy });
@@ -635,18 +733,102 @@
 
     // Method 1 — PCA grid reconstruction from sticker clusters
     // Try to fit a grid from the detected stickers directly.
+    //
+    // IMPORTANT: a >9-sticker cluster is multiple faces merged. fitGrid's PCA
+    // axes then point along the cluster's bounding-box diagonal (not a face
+    // grid axis) and the 4 corner-extrapolation lands them off-screen. The
+    // detectFaces path already handles this by ALWAYS splitting >9 clusters
+    // first; mirror that here, plus a kmeans-3 path for big (>14) clusters
+    // (catches the 3-face angled-cube case in one shot). Then for every
+    // candidate cluster, FILTER by its dominant sticker color — a 3-face
+    // solved cube produces 3 spatial regions each containing two colors (the
+    // shared row with the neighbour face), and a grid fit on the mixed
+    // cluster extrapolates past the face boundary. Filtering to the
+    // dominant color gives a clean 7–9 sticker single-face cluster. Finally
+    // reject any grid whose corners are outside the image — degenerate fits
+    // produce corners hundreds of px past the edge and the warped sample
+    // then reads across face boundaries.
+    const cornersInBounds = (grid) => {
+      for (const c of grid.corners) {
+        if (c.x < 0 || c.x > W || c.y < 0 || c.y > H) return false;
+      }
+      return true;
+    };
+    // Sample the work image at each sticker's center and bin to a face
+    // colour code. Used to split mixed-color clusters into single-face
+    // subgroups (a >9 cluster from 3 visible faces contains 2 colors per
+    // spatial region because each region shares an edge row with a
+    // neighbour face).
+    const wd = work.data;
+    const codeOf = (s) => {
+      const x = Math.max(0, Math.min(W - 1, Math.round(s.cx)));
+      const y = Math.max(0, Math.min(H - 1, Math.round(s.cy)));
+      const i = (y * W + x) * 4;
+      return classifyColor(wd[i], wd[i + 1], wd[i + 2]);
+    };
+    // Group stickers by their center colour. For a solved 3-face cube the
+    // resulting groups ARE the faces (the red face is the 9 red stickers,
+    // no spatial split needed), so this is the strongest signal and
+    // should run before kmeans. Returned sorted by count desc so we try
+    // the best-populated group first.
+    const colorGroup = (stk) => {
+      const buckets = {};
+      for (const s of stk) {
+        const c = codeOf(s);
+        (buckets[c] = buckets[c] || []).push(s);
+      }
+      return Object.values(buckets).filter((g) => g.length >= 5)
+        .sort((a, b) => b.length - a.length);
+    };
+    const tryFit = (stk) => {
+      const g = fitGrid(stk);
+      const grid = fitGrid(stk);
+      return grid && cornersInBounds(grid) ? grid : null;
+    };
+    const trySplit = (cluster, depth) => {
+      if (cluster.length < 5) return null;
+      if (depth > 3) return tryFit(cluster);
+      if (cluster.length > 9) {
+        // Big-enough cluster: try COLOR-GROUPING first (solved cubes).
+        // This is the strongest signal when each face is a single colour
+        // — the red face is the 9 red stickers with no spatial ambiguity,
+        // and the fit has zero extrapolation. Run before kmeans so solved
+        // cubes take the fast path.
+        for (const g of colorGroup(cluster)) {
+          const f = tryFit(g);
+          if (f) return f;
+        }
+        // kmeans-3 split for scrambled cubes (each face has mixed colors,
+        // so colour-grouping produces only 1-2 sticker buckets per colour
+        // and fails). Each group is one face spatially.
+        if (cluster.length >= 14) {
+          const groups = kmeans2D(cluster, 3, 30);
+          if (groups.length === 3 && groups.every((g) => g.length >= 5)) {
+            for (const g of groups) {
+              const f = tryFit(g);
+              if (f) return f;
+            }
+          }
+        }
+        // 2-means split (chained) as a last resort.
+        const parts = splitByOrientation(cluster);
+        if (parts.length > 1 && parts[0] !== cluster) {
+          for (const sub of parts) {
+            const f = trySplit(sub, depth + 1);
+            if (f) return f;
+          }
+          return null;
+        }
+        return tryFit(cluster);
+      }
+      return tryFit(cluster);
+    };
     function tryGridFit(stk, imgScale) {
       if (stk.length < 5) return null;
       const clusters = clusterStickers(stk);
       for (const cluster of clusters) {
         if (cluster.length < 5) continue;
-        let grid = fitGrid(cluster);
-        if (!grid && cluster.length >= 8) {
-          for (const sub of splitByOrientation(cluster)) {
-            grid = fitGrid(sub);
-            if (grid) break;
-          }
-        }
+        const grid = trySplit(cluster, 0);
         if (grid) {
           // Scale corners back to full-res
           const iScale = 1 / imgScale;
