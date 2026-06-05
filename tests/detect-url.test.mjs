@@ -1,8 +1,10 @@
 // Node-only regression test for specific public image URLs. Fetches each
-// image, runs detectCube, and asserts structural invariants. Some of these
-// images are KNOWN to trigger bugs in the detector — those assertions are
-// kept in the test suite so the bug doesn't regress silently. Skip cleanly
-// when the network is unreachable — CI may run without it.
+// image, runs detectCube, and asserts the expected (solved-cube) output.
+// Both images in this file are SOLVED cubes with three faces visible —
+// the correct detectCube() result for any of those faces is a 3×3 grid
+// of a single solid colour. Right now the detector returns a mixed-colour
+// grid (different bug per image), so these tests fail red. When the bugs
+// are fixed, the tests will pass green.
 //
 //   node --test tests/detect-url.test.mjs
 import test from "node:test";
@@ -12,31 +14,34 @@ import jpeg from "jpeg-js";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
-// Each case: a remote URL plus a local cache file. `knownBug` is an optional
-// predicate that, if it returns a string, marks that case as a documented
-// bug — the test asserts the bug is present so a future fix is a one-line
-// flip (change the assertion from "is buggy" to "is fixed").
+// Each case: a remote URL plus a local cache file. `solved` is a
+// Set<string> of the face colours that should be detectable on the cube
+// (the cube is in solved state in the image). `failureMode` is a
+// human-readable note about the CURRENT (buggy) behaviour — printed when
+// the expected-output assertion fails, so the failure message points at
+// the right thing to fix.
 const CASES = [
   {
     name: "6071137 (emuncloud)",
     url: "https://s3.amazonaws.com/emuncloud-staticassets/productImages/sm075/hires/6071137.jpg",
     cache: "fixtures/6071137.jpg",
-    // The cube carries a printed logo on the white centre sticker. The
-    // cellColor average across the cell pulls hue/sat into a non-white bin,
-    // so the centre of the white face is mis-classified as a colour.
-    knownBug: (result) => result.face.cells[4]?.code !== "W"
-      ? `centre cell classified as ${result.face.cells[4].code} (logo on white sticker bleeds into the average)`
-      : null,
+    // 2500×2500 product shot. Cube in solved state with three faces
+    // visible: red (top), blue (left), white (right, with a "Rubik's"
+    // logo on the centre sticker).
+    solved: new Set(["R", "B", "W"]),
+    failureMode:
+      "Method 3 (green/blue anchor) finds only 5 squares in a 90×90 region OUTSIDE the cube (1744,1455 in the 2500×2500 image) and stitches a 9-cell grid from background artefacts — current output is W B O / B B B / W B W. Fix: PCA-grid / sticker-proximity methods should not fall through to anchors when the cube fills most of the image.",
   },
   {
     name: "wargamer how-to",
     url: "https://www.wargamer.com/wp-content/sites/wargamer/2023/09/how-to-solve-a-rubiks-cube.jpg",
     cache: "fixtures/wargamer-how-to.jpg",
-    // This image is documented as failing detection entirely. The structural
-    // assertions below will pass; this entry simply records the case in the
-    // suite so future runs report on it. Add a specific assertion here once
-    // the failure mode is known.
-    knownBug: null,
+    // 1920×1080. Cube in solved state on a teal/cyan background. Three
+    // faces visible: white (top, with "Rubik's" logo on centre), red
+    // (left), blue (right).
+    solved: new Set(["R", "B", "W"]),
+    failureMode:
+      "Method 1 (grid) corner solver picks a quad where one corner lands at y=−115 (off-screen). The warped 3×3 grid therefore samples across face boundaries — current output is B W B / W W B / R R B. Fix: clamp corners to the image bounds before warping, or reject quads with any corner outside the image.",
   },
 ];
 
@@ -62,20 +67,18 @@ async function fetchWithTimeout(url, ms = 15000) {
   }
 }
 
+function urlFor(cacheFile) {
+  const c = CASES.find((c) => new URL("./" + c.cache, import.meta.url).pathname === cacheFile.pathname);
+  return c?.url;
+}
+
 async function loadImage(cacheFile) {
   fs.mkdirSync(new URL("./fixtures", import.meta.url), { recursive: true });
   if (!fs.existsSync(cacheFile)) {
-    const buf = await fetchWithTimeout(TEST_URL_FOR(cacheFile));
+    const buf = await fetchWithTimeout(urlFor(cacheFile));
     fs.writeFileSync(cacheFile, buf);
   }
   return jpeg.decode(fs.readFileSync(cacheFile), { useTArray: true });
-}
-
-// map cache file → source URL (the case object holds both, but we need
-// the URL at fetch time, not case-construction time)
-function TEST_URL_FOR(cacheFile) {
-  const c = CASES.find((c) => new URL("./" + c.cache, import.meta.url).pathname === cacheFile.pathname);
-  return c?.url;
 }
 
 if (!cv) {
@@ -116,24 +119,24 @@ if (!cv) {
       }
     });
 
-    test(`${tag}: stickerCount and squareCount are non-negative integers`, () => {
-      assert.equal(typeof result.stickerCount, "number");
-      assert.ok(result.stickerCount >= 0);
-      assert.equal(typeof result.squareCount, "number");
-      assert.ok(result.squareCount >= 0);
+    // EXPECTED OUTPUT (currently failing — see failureMode for the bug).
+    // Both images are solved cubes. A correct detectCube() result for
+    // any of the three visible faces should be 9 cells of the same
+    // colour (W for the white face, B for the blue face, R for the red
+    // face). The current output mixes colours, which is impossible on a
+    // solved cube and is the visible signature of the bug.
+    test(`${tag}: expected output — 3×3 grid is a single solid colour matching a visible face`, () => {
+      const codes = result.face.cells.map((cell) => cell.code);
+      const distinct = new Set(codes);
+      assert.equal(
+        distinct.size,
+        1,
+        `expected a single solid-colour face; got ${[...distinct].join("")} (grid: ${codes.join(" ")}) — impossible on a solved cube. Current failure: ${c.failureMode}`,
+      );
+      assert.ok(
+        c.solved.has(codes[0]),
+        `face colour ${codes[0]} is not one of the visible faces on the cube (${[...c.solved].join("")})`,
+      );
     });
-
-    if (c.knownBug) {
-      test(`${tag}: known bug — ${c.knownBug(result) ?? "see knownBug in detect-url.test.mjs"}`, () => {
-        // The knownBug predicate returns a non-null string ONLY when the
-        // bug is present. Asserting it is present pins the bug so a future
-        // fix is a one-line flip (replace with the fixed-state assertion).
-        const msg = c.knownBug(result);
-        assert.ok(
-          msg,
-          "bug is fixed — update this test to assert the new (correct) behaviour",
-        );
-      });
-    }
   }
 }
