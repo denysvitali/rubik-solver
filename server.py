@@ -50,6 +50,20 @@ def fetch_sample():
         _sample_cache = urllib.request.urlopen(req, timeout=20).read()
     return _sample_cache
 
+# Second sample: a 3D-perspective cube showing 3 visible faces on a light
+# blue background. Used by the CI browser test to assert the multi-face
+# detector handles angled shots (the front-on sample.jpg only exercises a
+# single face).
+ALGORITHMS_URL = "https://images.saymedia-content.com/.image/ar_1:1,c_fill,cs_srgb,q_auto:eco,w_1200/MTk3MDg5MjU5NDA3MDI1MjM1/rubik-cube-algorithms.png"
+_algorithms_cache = None
+
+def fetch_algorithms():
+    global _algorithms_cache
+    if _algorithms_cache is None:
+        req = urllib.request.Request(ALGORITHMS_URL, headers={"User-Agent": "Mozilla/5.0"})
+        _algorithms_cache = urllib.request.urlopen(req, timeout=20).read()
+    return _algorithms_cache
+
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
@@ -67,6 +81,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._serve_index()
         if path == "/sample.jpg":
             return self._serve_sample()
+        if path == "/algorithms.png":
+            return self._serve_algorithms()
         return super().do_GET()
 
     def _serve_sample(self):
@@ -77,6 +93,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         self.send_response(200)
         self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_algorithms(self):
+        try:
+            body = fetch_algorithms()
+        except Exception as exc:
+            self.send_error(502, f"Could not fetch algorithms image: {exc}")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

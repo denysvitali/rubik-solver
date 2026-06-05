@@ -3,10 +3,12 @@
 //
 //   node --test tests/detect.test.mjs
 //   IMG=userimg.jpg node --test tests/detect.test.mjs
+//   IMG=algorithms.png node --test tests/detect.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import jpeg from "jpeg-js";
+import { PNG } from "pngjs";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
@@ -19,8 +21,20 @@ const path = new URL("../" + FILE, import.meta.url);
 if (!fs.existsSync(path)) {
   test(`detect: ${FILE} not found — skipping`, { skip: true }, () => {});
 } else {
-  const img = jpeg.decode(fs.readFileSync(path), { useTArray: true });
-  const src = cv.matFromImageData({ data: img.data, width: img.width, height: img.height });
+  // Decode the image into an RGBA Uint8Array regardless of format.
+  // jpeg-js handles .jpg/.jpeg; pngjs handles .png. opencv.js takes RGBA
+  // directly, so we never convert to a different colorspace here.
+  const raw = fs.readFileSync(path);
+  const lower = FILE.toLowerCase();
+  let data, width, height;
+  if (lower.endsWith(".png")) {
+    const p = await new Promise((res, rej) => new PNG().parse(raw, (e, x) => (e ? rej(e) : res(x))));
+    data = p.data; width = p.width; height = p.height;
+  } else {
+    const j = jpeg.decode(raw, { useTArray: true });
+    data = j.data; width = j.width; height = j.height;
+  }
+  const src = cv.matFromImageData({ data, width, height });
 
   const result = RD.detectCube(cv, src);
   src.delete();

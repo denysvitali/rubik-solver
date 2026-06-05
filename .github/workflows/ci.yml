@@ -18,8 +18,19 @@ jobs:
       # Vendored opencv.js (10 MB) — same version the browser loads (jsdelivr
       # mirror; the official docs.opencv.org no longer serves 4.10.0).
       - run: curl -sLo opencv.js https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js
+      # Second detect fixture: a 3D-perspective cube on a light blue bg. The
+      # single-face sample.jpg covers the axis-aligned case; this one covers
+      # angled/multi-face detection. Downloaded on every CI run (the file is
+      # .gitignored).
+      - name: Download angled-cube fixture
+        run: curl -sLo algorithms.png "https://images.saymedia-content.com/.image/ar_1:1,c_fill,cs_srgb,q_auto:eco,w_1200/MTk3MDg5MjU5NDA3MDI1MjM1/rubik-cube-algorithms.png"
       - run: npm run check
-      - run: node --test tests/unit.test.mjs tests/detect.test.mjs
+      # Run the detect suite against BOTH images. The Node test discovers
+      # *.test.mjs so we re-run explicitly per image (the IMG env picks the
+      # decode path inside the test).
+      - run: node --test tests/unit.test.mjs
+      - run: node --test tests/detect.test.mjs
+      - run: IMG=algorithms.png node --test tests/detect.test.mjs
 
   browser:
     name: Browser integration test
@@ -34,15 +45,19 @@ jobs:
           python-version: "3.12"
       - run: npm ci
       - run: curl -sLo opencv.js https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js
+      - name: Download angled-cube fixture
+        run: curl -sLo algorithms.png "https://images.saymedia-content.com/.image/ar_1:1,c_fill,cs_srgb,q_auto:eco,w_1200/MTk3MDg5MjU5NDA3MDI1MjM1/rubik-cube-algorithms.png"
       - name: Start static server
         run: python3 server.py &
       - name: Wait for server
         run: sleep 2
-      - name: Run harness test
+      - name: Run harness test (default sample.jpg)
         # puppeteer 21+ downloads its own chromium on first install on the
         # ubuntu-latest runner. If the runner is sandboxed, set
         # PUPPETEER_EXECUTABLE_PATH to the system chromium.
         run: node --test tests/harness.test.mjs
+      - name: Run harness test (angled cube)
+        run: IMG=algorithms.png node --test tests/harness.test.mjs
       - name: Upload failure screenshot
         if: failure()
         uses: actions/upload-artifact@v4

@@ -36,7 +36,10 @@
       areaFrac: [0.0005, 0.03],   // [min, max] as fraction of image area
       polyEpsilonK: 0.06,         // approxPolyDP epsilon = k * perimeter
       minFill: 0.6,                // contour fill ratio (area / bbox area)
-      maxAspect: 2.2,              // max(w, h) / min(w, h)
+      // 3.5 catches tall/narrow stickers on a strongly angled cube's left/right
+      // face (e.g. a 25x80 px sticker in projection has minAreaRect aspect ≈
+      // 3.2). At ≤2.0 we'd drop most of the top/left face on a 3D-tilted shot.
+      maxAspect: 3.5,              // max(w, h) / min(w, h)
       thresholdBlocks: [41, 61, 81], // multi-scale adaptive threshold block sizes
       dedupDistK: 0.5,            // dedup radius = side * k
     },
@@ -477,36 +480,108 @@
     const n = stickers.length;
     if (n < 6) return [stickers];
 
-    // dominant edge direction across the cluster (true corners → e1)
-    const angs = stickers.map((s) => {
+    // Candidate split axes: the median of e1 angles AND the median of e1+90°.
+    // Two faces sharing an edge have stickers with edges parallel AND
+    // perpendicular to the shared edge — so the cluster's edge-direction
+    // histogram is bimodal. Using the median of ONE edge direction gives a
+    // perpendicular split axis that may or may not cross the seam; trying
+    // both orientations of the median and picking the one with the larger
+    // normalized gap is robust to which one happens to be the seam axis.
+    const angsRaw = stickers.map((s) => {
       let a = Math.atan2((s.e1 ? s.e1.y : 0), (s.e1 ? s.e1.x : 1)) * 180 / Math.PI;
       return ((a % 180) + 180) % 180;
     }).sort((a, b) => a - b);
-    const th = (angs[n >> 1] || 0) * Math.PI / 180;
-    // seam-crossing axis = perpendicular to the dominant edge
-    const px = -Math.sin(th), py = Math.cos(th);
-    const proj = stickers.map((s) => s.cx * px + s.cy * py);
+    const thA = (angsRaw[n >> 1] || 0) * Math.PI / 180;
+    const thB = thA + Math.PI / 2;
+    const tryAxis = (th) => {
+      // seam-crossing axis = perpendicular to candidate edge direction
+      const px = -Math.sin(th), py = Math.cos(th);
+      const proj = stickers.map((s) => s.cx * px + s.cy * py);
+      let c0 = Math.min(...proj), c1 = Math.max(...proj);
+      if (c1 - c0 < 1e-3) return null;
+      let assign = proj.map(() => 0);
+      for (let it = 0; it < 25; it++) {
+        assign = proj.map((p) => (Math.abs(p - c0) <= Math.abs(p - c1) ? 0 : 1));
+        const g0 = proj.filter((_, i) => assign[i] === 0), g1 = proj.filter((_, i) => assign[i] === 1);
+        const n0 = g0.length ? g0.reduce((a, b) => a + b) / g0.length : c0;
+        const n1 = g1.length ? g1.reduce((a, b) => a + b) / g1.length : c1;
+        if (Math.abs(n0 - c0) < 0.01 && Math.abs(n1 - c1) < 0.01) { c0 = n0; c1 = n1; break; }
+        c0 = n0; c1 = n1;
+      }
+      const A = stickers.filter((_, i) => assign[i] === 0);
+      const B = stickers.filter((_, i) => assign[i] === 1);
+      if (A.length < 4 || B.length < 4) return null;
+      // Score: gap / sticker pitch. A real seam produces a gap comparable
+      // to the sticker pitch; partial occlusion / a tilted angle that
+      // happened to align with the candidate axis produces a small gap.
+      const side = stickers.map((s) => s.side).sort((a, b) => a - b)[n >> 1] || 30;
+      const gap = Math.abs(c1 - c0);
+      if (gap < side * T.split.minClusterSide) return null;
+      return { A, B, score: gap / side };
+    };
 
-    // 1D 2-means on the projection
-    let c0 = Math.min(...proj), c1 = Math.max(...proj);
-    if (c1 - c0 < 1e-3) return [stickers];
-    let assign = proj.map(() => 0);
-    for (let it = 0; it < 25; it++) {
-      assign = proj.map((p) => (Math.abs(p - c0) <= Math.abs(p - c1) ? 0 : 1));
-      const g0 = proj.filter((_, i) => assign[i] === 0), g1 = proj.filter((_, i) => assign[i] === 1);
-      const n0 = g0.length ? g0.reduce((a, b) => a + b) / g0.length : c0;
-      const n1 = g1.length ? g1.reduce((a, b) => a + b) / g1.length : c1;
-      if (Math.abs(n0 - c0) < 0.01 && Math.abs(n1 - c1) < 0.01) { c0 = n0; c1 = n1; break; }
-      c0 = n0; c1 = n1;
+    const cand = [tryAxis(thA), tryAxis(thB)].filter(Boolean)
+      .sort((a, b) => b.score - a.score);
+    if (!cand.length) return [stickers];
+    return [cand[0].A, cand[0].B];
+  }
+
+  // 2D k-means with multiple restarts. Returns an array of clusters (each
+  // a sub-array of the input points). Used to split a multi-face cluster
+  // into K groups in one shot, sidestepping the chained-2-means problem
+  // where the first split's axis hides the second seam.
+  function kmeans2D(points, k, iters) {
+    const n = points.length;
+    if (n < k * 2) return [points];
+    // 1) k-means++ seeding — pick the first centroid at a stable spot
+    // (mean), then weight each subsequent pick by squared distance to the
+    // nearest already-chosen centroid (best expected SSE).
+    let bestLabels = null, bestSSE = Infinity;
+    for (let restart = 0; restart < 4; restart++) {
+      const cents = [];
+      if (restart === 0) {
+        // median of points — stable across images, immune to a few
+        // far-out background-noise stickers.
+        const sxs = points.map((p) => p.cx).sort((a, b) => a - b);
+        const sys = points.map((p) => p.cy).sort((a, b) => a - b);
+        cents.push({ cx: sxs[n >> 1], cy: sys[n >> 1] });
+      } else {
+        cents.push(points[Math.floor(Math.random() * n)]);
+      }
+      while (cents.length < k) {
+        const d2 = points.map((p) => {
+          let best = Infinity;
+          for (const c of cents) { const dx = p.cx - c.cx, dy = p.cy - c.cy; const dd = dx * dx + dy * dy; if (dd < best) best = dd; }
+          return best;
+        });
+        const sum = d2.reduce((a, b) => a + b, 0) || 1;
+        let r = Math.random() * sum;
+        let pick = 0;
+        for (let i = 0; i < n; i++) { r -= d2[i]; if (r <= 0) { pick = i; break; } }
+        cents.push({ cx: points[pick].cx, cy: points[pick].cy });
+      }
+      // 2) Lloyd iterations
+      const labels = new Array(n).fill(0);
+      for (let it = 0; it < (iters || 25); it++) {
+        let changed = false;
+        for (let i = 0; i < n; i++) {
+          let best = 0, bestD = Infinity;
+          for (let c = 0; c < k; c++) { const dx = points[i].cx - cents[c].cx, dy = points[i].cy - cents[c].cy; const dd = dx * dx + dy * dy; if (dd < bestD) { bestD = dd; best = c; } }
+          if (labels[i] !== best) { labels[i] = best; changed = true; }
+        }
+        const sums = Array.from({ length: k }, () => ({ sx: 0, sy: 0, n: 0 }));
+        for (let i = 0; i < n; i++) { sums[labels[i]].sx += points[i].cx; sums[labels[i]].sy += points[i].cy; sums[labels[i]].n++; }
+        for (let c = 0; c < k; c++) if (sums[c].n) { cents[c] = { cx: sums[c].sx / sums[c].n, cy: sums[c].sy / sums[c].n }; }
+        if (!changed) break;
+      }
+      // 3) Score this restart
+      let sse = 0;
+      for (let i = 0; i < n; i++) { const c = cents[labels[i]]; sse += (points[i].cx - c.cx) ** 2 + (points[i].cy - c.cy) ** 2; }
+      if (sse < bestSSE) { bestSSE = sse; bestLabels = labels.slice(); }
     }
-    const A = stickers.filter((_, i) => assign[i] === 0);
-    const B = stickers.filter((_, i) => assign[i] === 1);
-    if (A.length < 4 || B.length < 4) return [stickers];
-    // only accept the split if the two groups are well-separated (a real seam):
-    // gap between cluster means should exceed ~1 sticker pitch.
-    const side = stickers.map((s) => s.side).sort((a, b) => a - b)[n >> 1] || 30;
-    if (Math.abs(c1 - c0) < side * T.split.minClusterSide) return [stickers];
-    return [A, B];
+    const out = Array.from({ length: k }, () => []);
+    for (let i = 0; i < n; i++) out[bestLabels[i]].push(points[i]);
+    return out;
   }
 
   // Order 4 arbitrary points into [TL, TR, BR, BL] (standard sum/diff trick).
@@ -734,23 +809,79 @@
     };
 
     const clusters = clusterStickers(stickers);
+    // Walk clusters bottom-up: a >9-sticker cluster is multiple faces merged
+    // (a face has 9). Always recurse — the first fitGrid on a 14+ cluster
+    // can succeed by accident (one PCA axis + the off-axis stickers line up
+    // on the same projection) and "use up" the whole cluster as one face.
+    // Forcing a split first means each face comes from a 5–9 sub-cluster
+    // where the grid fit is actually meaningful. The depth/budget guards
+    // prevent runaway recursion if a split fails to shrink the cluster.
+    const tryEmit = (sub, depth) => {
+      if (sub.length < 5) return;
+      if (depth > 3) {
+        // Hit recursion budget — give up on splitting, just try a grid fit.
+        const g = fitGrid(sub);
+        if (g) emit(g, sub);
+        return;
+      }
+      if (sub.length > 9) {
+        const parts = splitByOrientation(sub);
+        // splitByOrientation may return the input unchanged if it can't find
+        // a real seam; treat that as a leaf and grid-fit directly.
+        if (parts.length === 1 || parts[0] === sub) {
+          const g = fitGrid(sub);
+          if (g) emit(g, sub);
+        } else {
+          for (const s2 of parts) tryEmit(s2, depth + 1);
+        }
+        return;
+      }
+      const grid = fitGrid(sub);
+      if (grid) emit(grid, sub);
+    };
     for (const cluster of clusters) {
       if (cluster.length < 5) continue;
-      // One face has at most 9 stickers; a bigger cluster is multiple faces
-      // merged → split first. Otherwise fit directly, splitting only if the fit
-      // fails.
-      const subs = cluster.length > 9 ? splitByOrientation(cluster) : [cluster];
-      for (const sub of subs) {
-        if (sub.length < 5) continue;
-        let grid = fitGrid(sub);
-        if (grid && emit(grid, sub)) continue;
-        if (sub.length >= 8) {                       // fit failed → try splitting
-          for (const s2 of splitByOrientation(sub)) {
-            const g2 = fitGrid(s2);
-            if (g2) emit(g2, s2);
+      if (cluster.length > 9) {
+        // Prefer a single 2D k-means with K=3 when the cluster is big enough
+        // to plausibly contain 3 faces. The chained 2-means approach
+        // (split, split the bigger half) can lock in on the wrong seam
+        // first; 3-means on positions finds the 3 face centroids in one
+        // pass and handles 3-face angled cubes robustly. Fall back to the
+        // recursive 2-means split if 3-means produces an ill-formed split.
+        const sub = tryClusterSplit(cluster);
+        if (sub) {
+          for (const s of sub) tryEmit(s, 1);
+        } else {
+          const parts = splitByOrientation(cluster);
+          if (parts.length === 1 || parts[0] === cluster) {
+            const g = fitGrid(cluster);
+            if (g) emit(g, cluster);
+          } else {
+            for (const s2 of parts) tryEmit(s2, 1);
           }
         }
+      } else {
+        const grid = fitGrid(cluster);
+        if (grid) emit(grid, cluster);
       }
+    }
+
+    // Try to split a big cluster into 3 faces via 2D k-means. Only return a
+    // split if all resulting groups look like a cube face (>=5 stickers and
+    // a successful grid fit, AND the split is reasonably balanced — a
+    // 11+7+8 split leaks a couple of stickers across the seam, while a
+    // clean 9+9+8 split has each face at its own centroid).
+    function tryClusterSplit(sub) {
+      if (sub.length < 14) return null; // 3 faces × ~5 each is the minimum
+      const groups = kmeans2D(sub, 3, 30);
+      if (groups.length !== 3) return null;
+      if (!groups.every((g) => g.length >= 5 && fitGrid(g))) return null;
+      const lens = groups.map((g) => g.length).sort((a, b) => a - b);
+      // Reject if a group is more than 4 stickers larger than the smallest.
+      // A balanced 3-face cube ≈ 9+9+8 (one sticker missing); an unbalanced
+      // 11+7+8 indicates a centroid wandered across a face boundary.
+      if (lens[2] - lens[0] > 4) return null;
+      return groups;
     }
     work.delete();
     return results;
@@ -1058,5 +1189,5 @@
     return result;
   }
 
-  return { detectCube, detectFaces, detectFacesGeometric, facesFromWireframe, readFaceQuad, sampleQuad, orderCorners, classifyColor, sampleGrid, cellColor, findStickerSquares, clusterStickers, findColorAnchors, pickCubeCluster, squaredBBox, fitGrid, splitByOrientation, COLORS, WORK_WIDTH };
+  return { detectCube, detectFaces, detectFacesGeometric, facesFromWireframe, readFaceQuad, sampleQuad, orderCorners, classifyColor, sampleGrid, cellColor, findStickerSquares, clusterStickers, findColorAnchors, pickCubeCluster, squaredBBox, fitGrid, splitByOrientation, kmeans2D, COLORS, WORK_WIDTH };
 });
