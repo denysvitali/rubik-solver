@@ -37,17 +37,24 @@ def _bust_token():
     _BUST_STATE = (mt, h.hexdigest()[:10])
     return _BUST_STATE[1]
 
-# Sample image: fetched server-side from the clean origin URL (no binary is
-# committed to the repo, and no third-party image proxy is used) and served
-# same-origin so the canvas isn't CORS-tainted when we read its pixels.
+# Sample image: prefer the local file committed to the repo (no network
+# dependency). Fall back to fetching the canonical origin URL only if the
+# local file is missing. Either way it's served same-origin so the canvas
+# isn't CORS-tainted when we read its pixels.
 SAMPLE_URL = "https://www.wfmt.com/wp-content/uploads/2023/02/rubiks.jpg"
 _sample_cache = None
 
 def fetch_sample():
     global _sample_cache
-    if _sample_cache is None:
-        req = urllib.request.Request(SAMPLE_URL, headers={"User-Agent": "Mozilla/5.0"})
-        _sample_cache = urllib.request.urlopen(req, timeout=20).read()
+    if _sample_cache is not None:
+        return _sample_cache
+    local = os.path.join(ROOT, "sample.jpg")
+    if os.path.isfile(local):
+        with open(local, "rb") as fh:
+            _sample_cache = fh.read()
+        return _sample_cache
+    req = urllib.request.Request(SAMPLE_URL, headers={"User-Agent": "Mozilla/5.0"})
+    _sample_cache = urllib.request.urlopen(req, timeout=20).read()
     return _sample_cache
 
 # Second sample: a 3D-perspective cube showing 3 visible faces on a light
@@ -59,9 +66,15 @@ _algorithms_cache = None
 
 def fetch_algorithms():
     global _algorithms_cache
-    if _algorithms_cache is None:
-        req = urllib.request.Request(ALGORITHMS_URL, headers={"User-Agent": "Mozilla/5.0"})
-        _algorithms_cache = urllib.request.urlopen(req, timeout=20).read()
+    if _algorithms_cache is not None:
+        return _algorithms_cache
+    local = os.path.join(ROOT, "algorithms.png")
+    if os.path.isfile(local):
+        with open(local, "rb") as fh:
+            _algorithms_cache = fh.read()
+        return _algorithms_cache
+    req = urllib.request.Request(ALGORITHMS_URL, headers={"User-Agent": "Mozilla/5.0"})
+    _algorithms_cache = urllib.request.urlopen(req, timeout=20).read()
     return _algorithms_cache
 
 
