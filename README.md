@@ -53,4 +53,4 @@ node test/detect.mjs <image.jpg>     # run the shared detector in Node, draw res
 node test/harness.mjs <out.png> <img> # drive the real page in headless Chromium
 ```
 
-[OpenCV.js]: https://docs.opencv.org/4.10.0/opencv.js
+[OpenCV.js]: https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js
