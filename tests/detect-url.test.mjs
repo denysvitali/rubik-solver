@@ -1,11 +1,15 @@
 // Node-only regression test for specific public image URLs. Fetches each
-// image, runs detectCube, and asserts the expected output. The first two
-// cases are SOLVED cubes with three faces visible — the correct detectCube()
-// result for any of those faces is a 3×3 grid of a single solid colour.
-// They currently fail (see failureMode for the bug) and will go green when
-// the bugs are fixed. The third case is a scrambled cube (the canonical
-// 3D-perspective "algorithms" image) — it only asserts structural validity,
-// since the correct grid is a mix of colours.
+// image, runs the detector, and asserts the expected output.
+//
+// Each case pins the canonical 3×3 output for every visible face of the
+// cube. These pinned values ARE the source of truth — see CLAUDE.md. When
+// a test fails, the fix lives in detector.js / app.js / server.py, never
+// in the assertions, fixtures, or the CASES array below.
+//
+// The first two cases are SOLVED cubes with three faces visible — the
+// correct output for any of those faces is a 3×3 grid of a single solid
+// colour. The third case is a scrambled cube (the canonical 3D-
+// perspective "algorithms" image) — all three face grids are pinned.
 //
 //   node --test tests/detect-url.test.mjs
 import test from "node:test";
@@ -15,6 +19,7 @@ import jpeg from "jpeg-js";
 import { PNG } from "pngjs";
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
+const ort = require("onnxruntime-node");
 
 // Each case: a remote URL plus a local cache file. `solved` is a
 // Set<string> of the face colours that should be detectable on the cube
@@ -50,13 +55,20 @@ const CASES = [
   {
     name: "rubik-cube-algorithms (saymedia)",
     // 1200×1200 PNG. 3D-perspective scrambled cube on a light blue
-    // background — three faces visible (top, left, right). Not a solved
-    // cube, so the assertion is only structural (9 cells, valid codes).
-    // Originally failed because findStickerSquares rejected tall/narrow
-    // left-face stickers (maxAspect 2.2 was too tight for perspective).
+    // background — three faces visible (top, left, right). All three face
+    // grids are pinned as the source of truth.
     url: "https://images.saymedia-content.com/.image/ar_1:1,c_fill,cs_srgb,q_auto:eco,w_1200/MTk3MDg5MjU5NDA3MDI1MjM1/rubik-cube-algorithms.png",
     cache: "fixtures/rubik-cube-algorithms.png",
     format: "png",
+    // Each row of `faces` is a 3×3 grid read from the cube. The order is
+    // [top, right, left] (top is the upward-tilted face). Sticker colours
+    // are read off the image itself — these are the canonical values the
+    // detector must reproduce.
+    faces: [
+      ["Y", "Y", "B", "B", "Y", "W", "W", "G", "R"], // top
+      ["O", "R", "B", "R", "G", "W", "B", "G", "G"], // right
+      ["Y", "B", "W", "W", "R", "G", "O", "G", "Y"], // left
+    ],
   },
 ];
 
@@ -155,10 +167,69 @@ if (!cv) {
           `face colour ${codes[0]} is not one of the visible faces on the cube (${[...c.solved].join("")})`,
         );
       });
+    } else if (c.faces) {
+      // SCRAMBLED 3-face cube: pin each of the three face grids as source
+      // of truth. detectCube only returns ONE face, so we use
+      // detectFacesGeometric for this case — the multi-face geometric
+      // path is the right tool. We compute the same u2netp mask the
+      // browser does (see test/full.mjs) so the test exercises the
+      // actual production path, not a degraded Node-only fallback.
+      const img2 = await loadImage(cacheFile, c.format);
+      const src2 = cv.matFromImageData({ data: img2.data, width: img2.width, height: img2.height });
+      let faces;
+      try {
+        // Run the u2netp model to segment the cube (mirrors what
+        // app.js:segmentCube does in the browser).
+        const sess = await ort.InferenceSession.create("./u2netp.onnx");
+        const rs = new cv.Mat(); cv.resize(src2, rs, new cv.Size(320, 320), 0, 0, cv.INTER_AREA);
+        const rgb = new cv.Mat(); cv.cvtColor(rs, rgb, cv.COLOR_RGBA2RGB);
+        const d = rgb.data;
+        const mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
+        const inp = new Float32Array(3 * 320 * 320);
+        for (let i = 0; i < 320 * 320; i++) for (let k = 0; k < 3; k++) inp[k * 320 * 320 + i] = ((d[i * 3 + k] / 255) - mean[k]) / std[k];
+        const out = await sess.run({ [sess.inputNames[0]]: new ort.Tensor("float32", inp, [1, 3, 320, 320]) });
+        const sal = out[sess.outputNames[0]].data;
+        let mn = 1e9, mx = -1e9; for (const v of sal) { if (v < mn) mn = v; if (v > mx) mx = v; }
+        const m320 = new cv.Mat(320, 320, cv.CV_8U);
+        for (let i = 0; i < 320 * 320; i++) m320.data[i] = ((sal[i] - mn) / (mx - mn)) > 0.5 ? 255 : 0;
+        const cubeMask = new cv.Mat();
+        cv.resize(m320, cubeMask, new cv.Size(img2.width, img2.height), 0, 0, cv.INTER_NEAREST);
+        rs.delete(); rgb.delete(); m320.delete();
+        try {
+          faces = RD.detectFacesGeometric(cv, src2, { cubeMask });
+        } finally {
+          cubeMask.delete();
+        }
+      } finally {
+        src2.delete();
+      }
+      test(`${tag}: detects 3 faces`, () => {
+        assert.equal(faces.length, 3, `expected 3 faces from the 3-face cube; got ${faces.length}`);
+      });
+      test(`${tag}: every face has 9 valid cells`, () => {
+        for (const f of faces) {
+          assert.equal(f.face.cells.length, 9);
+          for (const cell of f.face.cells) {
+            assert.match(cell.code, /^[WYROGB]$/, `bad code: ${cell.code}`);
+          }
+        }
+      });
+      test(`${tag}: all three face grids match the source of truth`, () => {
+        const got = faces.map((f) => f.face.cells.map((cell) => cell.code).join(""));
+        const want = c.faces.map((row) => row.join(""));
+        const missing = want.filter((g) => !got.includes(g));
+        const extra = got.filter((g) => !want.includes(g));
+        assert.equal(
+          missing.length + extra.length,
+          0,
+          `face grids differ. got=${JSON.stringify(got)} want=${JSON.stringify(want)} ` +
+            (missing.length ? `missing=${JSON.stringify(missing)} ` : "") +
+            (extra.length ? `extra=${JSON.stringify(extra)}` : ""),
+        );
+      });
     } else {
-      // For SCRAMBLED cubes: just confirm we got something that looks
-      // like a real 3×3 cube read (at least 3 distinct colours, none of
-      // which is the empty/default W).
+      // For SCRAMBLED cubes without a pinned 3-face grid: just confirm
+      // we got something that looks like a real 3×3 cube read.
       test(`${tag}: 3×3 grid shows a real scrambled face (>=3 distinct colours)`, () => {
         const codes = result.face.cells.map((cell) => cell.code);
         const distinct = new Set(codes);

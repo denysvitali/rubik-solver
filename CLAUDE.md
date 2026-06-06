@@ -83,3 +83,11 @@ No `npm test` wired up. No linter configured.
 - Detection functions take a `cv` instance + `cv.Mat`, return plain data objects — no DOM access in detector.js
 - Debug arrays: pass `{debug: []}` in opts to collect step images as `{name, width, height, data:RGBA}`
 - Corner order convention: `[TL, TR, BR, BL]` via `orderCorners()` (sum/diff trick)
+
+## Source of Truth
+
+Pinned test expectations in `tests/` are the **source of truth** and must never be modified to make a broken detector pass. When a test fails, the fix lives in `detector.js`, `app.js`, or `server.py` — never in the test assertions, fixtures, or the `CASES` array in `tests/detect-url.test.mjs`.
+
+If the detector is wrong about a known input, the expected output is the ground truth and the detector must be made to match. If a new detector behaviour needs pinning, **add a new assertion to the test file** — don't edit an existing one. Pinned values (face grids, side-start indices, color codes) encode intent: changing them silently changes the contract the detector implements.
+
+The `CASES` array in `tests/detect-url.test.mjs` is the canonical record of the expected output for each known input image. For multi-face cases (e.g. the 3-face `algorithms.png`), each of the three faces' `cells` arrays is pinned — top, left, right.
