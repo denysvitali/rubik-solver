@@ -37,6 +37,7 @@ const CASES = [
     // visible: red (top), blue (left), white (right, with a "Rubik's"
     // logo on the centre sticker).
     solved: new Set(["R", "B", "W"]),
+    flatStickerFallback: true,
     failureMode:
       "Method 3 (green/blue anchor) finds only 5 squares in a 90×90 region OUTSIDE the cube (1744,1455 in the 2500×2500 image) and stitches a 9-cell grid from background artefacts — current output is W B O / B B B / W B W. Fix: PCA-grid / sticker-proximity methods should not fall through to anchors when the cube fills most of the image.",
   },
@@ -49,6 +50,7 @@ const CASES = [
     // faces visible: white (top, with "Rubik's" logo on centre), red
     // (left), blue (right).
     solved: new Set(["R", "B", "W"]),
+    flatStickerFallback: true,
     failureMode:
       "Method 1 (grid) PCA-on-direction-vectors found the parallelogram DIAGONALS of the tilted face (not the row/column sides), so the (u,v) grid's corners landed at the diagonal extremes — one corner at y=−115 off-screen. The warped 3×3 then sampled across face boundaries, returning R W B / R W W / R B B. Fix: use each sticker's e1/e2 edge vectors (set in findStickerSquares from approxPolyDP) as the (u,v) axes — they're the 2D projections of the face's actual grid-aligned edges. Plus: colorGroup the cluster first (9R/8W/7B for this image) so solved-cube single-colour faces take the fast path without kmeans.",
   },
@@ -196,6 +198,26 @@ if (!cv) {
           `face colour ${codes[0]} is not one of the visible faces on the cube (${[...c.solved].join("")})`,
         );
       });
+      if (c.flatStickerFallback) {
+        const imgFlat = await loadImage(cacheFile, c.format);
+        const srcFlat = cv.matFromImageData({ data: imgFlat.data, width: imgFlat.width, height: imgFlat.height });
+        let stickerFaces;
+        try {
+          stickerFaces = RD.detectFaces(cv, srcFlat);
+        } finally {
+          srcFlat.delete();
+        }
+        test(`${tag}: app can avoid segmentation for flat sticker cube`, () => {
+          const strongSingle =
+            result.confident &&
+            result.method !== "center-crop" &&
+            result.stickerCount >= 2;
+          assert.ok(
+            stickerFaces.length > 0 || strongSingle,
+            `expected sticker faces or a strong single-face fallback; got faces=${stickerFaces.length}, method=${result.method}, stickers=${result.stickerCount}`,
+          );
+        });
+      }
     } else if (c.faces) {
       // SCRAMBLED 3-face cube: pin each of the three face grids as source
       // of truth. detectCube only returns ONE face, so we use

@@ -535,18 +535,27 @@
     const debug = [];
     let faces = RubikDetector.detectFaces(cv, full, { debug });
     let geometric = false;
+    let singleResult = null;
     if (faces.length === 0) {
-      // Neural segmentation for the silhouette (handles glossy/stickerless/
-      // white pieces + cluttered background). Falls back internally if absent.
-      showProgress(50, "Segmenting cube (neural model)…");
-      let cubeMask = null;
-      setStatus("busy", '<span class="spinner"></span> Segmenting cube (model)…');
-      try { cubeMask = await segmentCube(full); } catch (e) { console.error("segmentation failed", e); }
-      showProgress(70, "Fitting geometric silhouette…");
-      debug.length = 0;
-      faces = RubikDetector.detectFacesGeometric(cv, full, { debug, cubeMask });
-      if (cubeMask) cubeMask.delete();
-      geometric = faces.length > 0;
+      showProgress(50, "Trying single-face sticker fallback…");
+      singleResult = RubikDetector.detectCube(cv, full);
+      const strongSingle =
+        singleResult.confident &&
+        singleResult.method !== "center-crop" &&
+        singleResult.stickerCount >= 2;
+      if (!strongSingle) {
+        // Neural segmentation for the silhouette (handles glossy/stickerless/
+        // white pieces + cluttered background). Falls back internally if absent.
+        showProgress(60, "Segmenting cube (neural model)…");
+        let cubeMask = null;
+        setStatus("busy", '<span class="spinner"></span> Segmenting cube (model)…');
+        try { cubeMask = await segmentCube(full); } catch (e) { console.error("segmentation failed", e); }
+        showProgress(75, "Fitting geometric silhouette…");
+        debug.length = 0;
+        faces = RubikDetector.detectFacesGeometric(cv, full, { debug, cubeMask });
+        if (cubeMask) cubeMask.delete();
+        geometric = faces.length > 0;
+      }
     }
     showProgress(90, "Reading face colors…");
     renderDebug(debug);
@@ -574,8 +583,7 @@
     }
 
     // Fallback: single fronto-parallel face.
-    showProgress(70, "Trying single-face fallback…");
-    const result = RubikDetector.detectCube(cv, full);
+    const result = singleResult || RubikDetector.detectCube(cv, full);
     full.delete();
     state.lastFace = result.face;
     state.lastFaces = [result.face];
