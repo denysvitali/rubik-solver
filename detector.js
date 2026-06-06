@@ -1314,7 +1314,21 @@
     // A real cube face yields ≥3 distinct cell colours; a fake silhouette
     // (hand+wall+paper, single-tone background, etc.) reads as mostly the
     // same colour after warp. Reject and let the caller fall back.
-    const isCubeLike = (face) => face && new Set(face.cells.map((c) => c.code)).size >= 3;
+    // We also require no single colour dominates the 9 cells: a true cube
+    // spans 6 sticker colours so even a "lucky" reading rarely has one
+    // colour above ~45 %, while a silhouette that engulfed a hand (skin) or
+    // background (paper / wall) collapses to one dominant tone (orange /
+    // white). Falling back via [] lets the caller try detectCube, which on
+    // such images nails the cube via the green/blue anchor path.
+    const isCubeLike = (face) => {
+      if (!face) return false;
+      const codes = face.cells.map((c) => c.code);
+      if (new Set(codes).size < 3) return false;
+      const counts = {};
+      for (const c of codes) counts[c] = (counts[c] || 0) + 1;
+      const maxFrac = Math.max(...Object.values(counts)) / codes.length;
+      return maxFrac <= 0.50;
+    };
 
     if (N === 4) {
       const quad = toFull(V);
