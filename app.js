@@ -17,26 +17,35 @@
   }
 
   const statusEl = $("status");
+  const statusTextEl = $("statusText");
   const overlay = $("overlay");
   const fileInput = $("file");
   const drop = $("drop");
   const detectBtn = $("detectBtn");
-  const sampleBtn = $("sampleBtn");
   const pickBtn = $("pickBtn");
+  const newImageBtn = $("newImageBtn");
   const facesEl = $("faces");
   const legendEl = $("legend");
   const diag = $("diag");
   const progressWrap = $("progressWrap");
   const progressFill = $("progressFill");
   const progressLabel = $("progressLabel");
+  const progressPct = $("progressPct");
   const canvasWrap = $("canvasWrap");
   const appLogEl = $("appLog");
   const logLines = [];
-  // Mutable state bag. Grouped so we never accidentally shadow another
-  // module-level let when reading from a closure.
+  const dropCard = $("dropCard");
+  const canvasCard = $("canvasCard");
+  const imgDimsEl = $("imgDims");
+  const imgSizeEl = $("imgSize");
+  const summaryEl = $("summary");
+  const resultsMetaEl = $("resultsMeta");
+  const dropOverlay = $("dropOverlay");
+
   const state = {
     cvReady: false,
     srcImg: null,       // HTMLImageElement currently loaded
+    srcFile: null,      // File (if user picked one, for size display)
     lastFace: null,     // last detected face (for copy-to-clipboard)
     lastFaces: [],      // all detected faces (multi-face)
     pickMode: false,    // manual corner-picking active
@@ -86,6 +95,17 @@
 
   const COLORS = RubikDetector.COLORS;
 
+  // ---- Status pill (color-coded, with optional spinner) ----
+  // state: undefined | "ready" | "busy" | "err"
+  function setStatus(state, html) {
+    statusEl.className = "status" + (state ? " " + state : "");
+    statusTextEl.innerHTML = html || "";
+  }
+  function setStatusText(text) { statusTextEl.textContent = text; }
+  function setStatusSpinner(label) {
+    statusTextEl.innerHTML = '<span class="spinner"></span> ' + label;
+  }
+
   const enableActions = () => {
     const on = state.cvReady && state.srcImg;
     detectBtn.disabled = !on;
@@ -95,8 +115,7 @@
   // ---- OpenCV load handling ----
   function onCvReady() {
     state.cvReady = true;
-    statusEl.textContent = "OpenCV ready";
-    statusEl.classList.add("ready");
+    setStatus("ready", "OpenCV ready");
     enableActions();
     ensureModel(); // preload the segmentation model so it's ready at detect time
   }
@@ -104,7 +123,7 @@
   function waitForCv() {
     let attempts = 0;
     const failCv = (err) => {
-      statusEl.textContent = "Failed to load OpenCV";
+      setStatus("err", "Failed to load OpenCV");
       console.error("OpenCV did not initialize", err || "");
     };
     const resolveCv = (loader) => {
@@ -129,18 +148,47 @@
   }
   waitForCv();
 
+  // ---- View switching (drop zone ↔ canvas) ----
+  function showDropZone() {
+    dropCard.hidden = false;
+    canvasCard.hidden = true;
+    // reset UI
+    state.srcImg = null;
+    state.srcFile = null;
+    state.lastFace = null;
+    state.lastFaces = [];
+    state.wireframe = null;
+    state.dragIdx = null;
+    facesEl.innerHTML = `
+      <div class="empty-state">
+        <svg class="empty-illus" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <rect x="8" y="8" width="48" height="48" rx="8" fill="#f3f4f6" stroke="#d6d1c4" stroke-width="1.5" stroke-dasharray="3 3"/>
+          <path d="M22 32h20M32 22v20" stroke="#9aa0ac" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <h3>No faces detected yet</h3>
+        <p>Load a cube photo, then press <b>Detect cube</b>.</p>
+      </div>`;
+    legendEl.innerHTML = "";
+    summaryEl.hidden = true;
+    summaryEl.innerHTML = "";
+    resultsMetaEl.textContent = "No image yet";
+    setStatus(state.cvReady ? "ready" : null, state.cvReady ? "OpenCV ready" : "Loading OpenCV…");
+  }
+  function showCanvas() {
+    dropCard.hidden = true;
+    canvasCard.hidden = false;
+  }
+
   // ---- Image loading ----
-  function loadImageFromSrc(src) {
-    // Immediate feedback: show loading state so the user knows something is happening.
-    statusEl.innerHTML = '<span class="spinner"></span> Loading image…';
-    statusEl.classList.remove("ready");
+  function loadImageFromSrc(src, file) {
+    setStatus("busy", '<span class="spinner"></span> Loading image…');
     detectBtn.disabled = true;
     pickBtn.disabled = true;
     canvasWrap.classList.add("loading");
     if (URL_DEBUG) appLog(`[load] ${src.substring(0, 60)}`);
 
-    // For file blobs, read via FileReader → data URL (most compatible across browsers).
-    // For remote/same-origin URLs, load directly with Image().
+    state.srcFile = file || null;
+
     const finish = (dataUrl) => {
       const img = new Image();
       img.onload = () => {
@@ -149,15 +197,34 @@
         cancelPick();
         state.wireframe = null; state.dragIdx = null;
         canvasWrap.classList.remove("loading");
+        // Reset results panel for the new image
+        facesEl.innerHTML = `
+          <div class="empty-state">
+            <h3>Ready to detect</h3>
+            <p>Press <b>Detect cube</b> below the image.</p>
+          </div>`;
+        legendEl.innerHTML = "";
+        summaryEl.hidden = true;
+        summaryEl.innerHTML = "";
+        resultsMetaEl.textContent = "Image loaded — awaiting detection";
+        // Meta
+        imgDimsEl.textContent = `${img.naturalWidth} × ${img.naturalHeight}`;
+        if (state.srcFile) {
+          const kb = state.srcFile.size / 1024;
+          imgSizeEl.textContent = kb < 1024 ? `${kb.toFixed(0)} KB` : `${(kb / 1024).toFixed(1)} MB`;
+        } else {
+          imgSizeEl.textContent = "";
+        }
+        showCanvas();
         drawBase();
         enableActions();
-        statusEl.textContent = state.cvReady ? "OpenCV ready — image loaded" : "Loading OpenCV…";
-        statusEl.classList.toggle("ready", state.cvReady);
+        if (state.cvReady) setStatus("ready", "Image loaded — ready to detect");
+        else setStatus(null, "Loading OpenCV…");
       };
       img.onerror = (e) => {
         console.error("img.onerror", e);
         canvasWrap.classList.remove("loading");
-        statusEl.textContent = "Failed to load image";
+        setStatus("err", "Failed to load image");
         enableActions();
       };
       img.src = dataUrl;
@@ -170,14 +237,14 @@
         reader.onerror = (e) => {
           console.error("FileReader error", e);
           canvasWrap.classList.remove("loading");
-          statusEl.textContent = "Failed to read image";
+          setStatus("err", "Failed to read image");
           enableActions();
         };
         reader.readAsDataURL(blob);
       }).catch((e) => {
         console.error("fetch/Reader error", e);
         canvasWrap.classList.remove("loading");
-        statusEl.textContent = "Failed to load image";
+        setStatus("err", "Failed to load image");
         enableActions();
       });
     } else {
@@ -192,7 +259,7 @@
 
   // Draw the image into the (display-sized) overlay canvas.
   function drawBase() {
-    const maxW = 520;
+    const maxW = 720;
     const scale = Math.min(1, maxW / state.srcImg.naturalWidth);
     overlay.width = Math.round(state.srcImg.naturalWidth * scale);
     overlay.height = Math.round(state.srcImg.naturalHeight * scale);
@@ -212,35 +279,85 @@
 
   fileInput.addEventListener("change", (e) => {
     const f = e.target.files[0];
-    if (f) loadImageFromSrc(URL.createObjectURL(f));
+    if (f) loadImageFromSrc(URL.createObjectURL(f), f);
+    // reset so picking the same file again still triggers change
+    e.target.value = "";
   });
 
   // Test hook: load an arbitrary same-origin image (used by the headless harness)
   window.__loadForTest = (src) => loadImageFromSrc(src);
 
+  // Drop zone interactions (on the label)
   drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("drag"); });
   drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
   drop.addEventListener("drop", (e) => {
     e.preventDefault();
     drop.classList.remove("drag");
     const f = e.dataTransfer.files[0];
-    if (f) loadImageFromSrc(URL.createObjectURL(f));
+    if (f) loadImageFromSrc(URL.createObjectURL(f), f);
   });
 
-  sampleBtn.addEventListener("click", () => loadImageFromSrc("sample.jpg"));
+  // Sample chips (on the drop card)
+  document.querySelectorAll(".sample-chip").forEach((chip) => {
+    chip.addEventListener("click", (e) => {
+      e.preventDefault();
+      const src = chip.getAttribute("data-sample");
+      if (src) loadImageFromSrc(src);
+    });
+  });
+
+  // "New image" button → back to drop zone
+  newImageBtn?.addEventListener("click", () => {
+    cancelPick();
+    hideProgress();
+    showDropZone();
+  });
+
+  // ---- Full-window drop overlay (drag from outside the drop zone too) ----
+  let dragDepth = 0;
+  window.addEventListener("dragenter", (e) => {
+    if (!e.dataTransfer || !e.dataTransfer.types.includes("Files")) return;
+    dragDepth++;
+    dropOverlay.hidden = false;
+  });
+  window.addEventListener("dragleave", (e) => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) dropOverlay.hidden = true;
+  });
+  window.addEventListener("dragover", (e) => {
+    if (e.dataTransfer && e.dataTransfer.types.includes("Files")) e.preventDefault();
+  });
+  window.addEventListener("drop", (e) => {
+    dragDepth = 0;
+    dropOverlay.hidden = true;
+    const f = e.dataTransfer?.files?.[0];
+    if (f) {
+      e.preventDefault();
+      loadImageFromSrc(URL.createObjectURL(f), f);
+    }
+  });
+
+  // ---- Keyboard shortcuts ----
+  window.addEventListener("keydown", (e) => {
+    if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === "d" && !detectBtn.disabled) { e.preventDefault(); detectBtn.click(); }
+    else if (k === "p" && !pickBtn.disabled) { e.preventDefault(); pickBtn.click(); }
+    else if (k === "n") { e.preventDefault(); newImageBtn?.click(); }
+  });
 
   detectBtn.addEventListener("click", () => {
     if (!state.cvReady || !state.srcImg) return;
     detectBtn.disabled = true;
-    statusEl.innerHTML = '<span class="spinner"></span> Detecting…';
+    setStatus("busy", '<span class="spinner"></span> Detecting…');
     setTimeout(async () => {
       try {
         await runDetection();
-        statusEl.textContent = "Detection complete";
-        statusEl.classList.add("ready");
+        setStatus("ready", "Detection complete");
       } catch (err) {
         console.error(err);
-        statusEl.textContent = "Detection error: " + err.message;
+        setStatus("err", "Detection error: " + err.message);
         diag.textContent = String(err.stack || err);
         hideProgress();
       } finally {
@@ -292,8 +409,7 @@
     state.pickMode = true;
     state.pickPts = [];
     pickBtn.textContent = "Cancel";
-    statusEl.textContent = "Click corner 1 of 4 (any face, in order around it)";
-    statusEl.classList.remove("ready");
+    setStatus("busy", "Click corner 1 of 4 (in order around the face)");
     drawBase();
   });
 
@@ -312,7 +428,7 @@
     state.pickPts.push({ x: cx / ds, y: cy / ds });
     drawPickProgress(ds);
     if (state.pickPts.length < 4) {
-      statusEl.textContent = `Click corner ${state.pickPts.length + 1} of 4`;
+      setStatus("busy", `Click corner ${state.pickPts.length + 1} of 4`);
     } else {
       finishPick();
     }
@@ -340,7 +456,7 @@
   function finishPick() {
     const corners = state.pickPts.slice(); // snapshot before cancelPick() clears it
     cancelPick();
-    statusEl.innerHTML = '<span class="spinner"></span> Warping & reading face…';
+    setStatus("busy", '<span class="spinner"></span> Warping & reading face…');
     setTimeout(() => {
       try {
         const full = fullResMat();
@@ -351,14 +467,14 @@
         drawQuadOverlay(face, ds);
         renderFaces(face);
         renderLegend();
+        renderSummary([{ face, method: "manual corners", stickerCount: 9 }], "manual corners");
         diag.textContent =
           `source: ${state.srcImg.naturalWidth}x${state.srcImg.naturalHeight}` +
           `\nmethod: manual corners (perspective warp)`;
-        statusEl.textContent = "Detection complete (manual)";
-        statusEl.classList.add("ready");
+        setStatus("ready", "Detection complete (manual)");
       } catch (err) {
         console.error(err);
-        statusEl.textContent = "Manual detect error: " + err.message;
+        setStatus("err", "Manual detect error: " + err.message);
       }
     }, 30);
   }
@@ -386,17 +502,19 @@
     }
   }
 
-  const FACE_COLORS = ["#5fd97f", "#4f8cff", "#ffb43d", "#ff6fd0"];
+  const FACE_COLORS = ["#10b981", "#3b82f6", "#fbbf24", "#ec4899"];
 
   // ---- Progress bar helpers ----
   function showProgress(pct, label) {
     progressWrap.classList.add("active");
     progressFill.style.width = pct + "%";
     progressLabel.textContent = label;
+    if (progressPct) progressPct.textContent = Math.round(pct) + "%";
   }
   function hideProgress() {
     progressWrap.classList.remove("active");
     progressFill.style.width = "0%";
+    if (progressPct) progressPct.textContent = "0%";
   }
 
   // ---- Run shared detector, then render ----
@@ -422,7 +540,7 @@
       // white pieces + cluttered background). Falls back internally if absent.
       showProgress(50, "Segmenting cube (neural model)…");
       let cubeMask = null;
-      statusEl.innerHTML = '<span class="spinner"></span> Segmenting cube (model)…';
+      setStatus("busy", '<span class="spinner"></span> Segmenting cube (model)…');
       try { cubeMask = await segmentCube(full); } catch (e) { console.error("segmentation failed", e); }
       showProgress(70, "Fitting geometric silhouette…");
       debug.length = 0;
@@ -442,6 +560,8 @@
       if (state.wireframe) drawHandles(ds);
       renderMultiFaces(faces);
       renderLegend();
+      const method = geometric ? "geometric silhouette" : "sticker grid";
+      renderSummary(faces, method);
       diag.textContent =
         `source: ${state.srcImg.naturalWidth}x${state.srcImg.naturalHeight}` +
         `\nmethod: ${geometric ? "auto multi-face (geometric silhouette)" : "auto multi-face (sticker grid)"}` +
@@ -468,6 +588,7 @@
     }
     renderFaces(result.face);
     renderLegend();
+    renderSummary([{ face: result.face, method: result.method, stickerCount: result.stickerCount }], result.method);
 
     const regionInfo = result.region
       ? `\nface region: ${Math.round(result.region.w)}x${Math.round(result.region.h)} @(${Math.round(result.region.x)},${Math.round(result.region.y)})`
@@ -514,7 +635,9 @@
   function renderMultiFaces(faces) {
     facesEl.innerHTML = "";
     faces.forEach((f, i) => {
-      facesEl.appendChild(buildFaceCard(f.face, `Face ${i + 1} — ${f.stickerCount} stickers`, FACE_COLORS[i % FACE_COLORS.length]));
+      const swatch = FACE_COLORS[i % FACE_COLORS.length];
+      const title = `Face ${i + 1}`;
+      facesEl.appendChild(buildFaceCard(f.face, title, swatch, f.stickerCount));
     });
   }
 
@@ -639,22 +762,46 @@
     return out.trimEnd();
   }
 
-  // Build one face card (grid + per-face copy button). accent optionally
-  // tints the title to match the overlay color for that face.
-  function buildFaceCard(face, title, accent) {
+  // Decide whether a cell's text label should be light or dark for contrast.
+  function labelClass(c) {
+    const css = (COLORS[c.code] && COLORS[c.code].css) || "#999";
+    // crude luminance
+    const m = css.match(/^#?([0-9a-f]{6})$/i);
+    if (!m) return "";
+    const r = parseInt(m[1].slice(0, 2), 16);
+    const g = parseInt(m[1].slice(2, 4), 16);
+    const b = parseInt(m[1].slice(4, 6), 16);
+    const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return lum > 0.6 ? "light" : "dark";
+  }
+
+  // Build one face card (grid + per-face copy button).
+  // accent tints the swatch + title to match the overlay color for that face.
+  function buildFaceCard(face, title, accent, stickerCount) {
     const card = document.createElement("div");
     card.className = "face-card";
 
     const head = document.createElement("div");
     head.className = "face-head";
+    if (accent) {
+      const sw = document.createElement("span");
+      sw.className = "swatch";
+      sw.style.background = accent;
+      head.appendChild(sw);
+    }
     const h = document.createElement("h3");
     h.textContent = title;
-    if (accent) h.style.color = accent;
+    head.appendChild(h);
+    if (typeof stickerCount === "number") {
+      const stats = document.createElement("div");
+      stats.className = "stats";
+      stats.innerHTML = `<span class="num">${stickerCount}</span> stickers`;
+      head.appendChild(stats);
+    }
     const copyBtn = document.createElement("button");
     copyBtn.className = "btn secondary copy-btn";
     copyBtn.textContent = "Copy";
     copyBtn.addEventListener("click", () => copyFace(face, copyBtn));
-    head.appendChild(h);
     head.appendChild(copyBtn);
 
     const grid = document.createElement("div");
@@ -665,7 +812,8 @@
       cell.style.background = COLORS[c.code].css;
       cell.title = `${COLORS[c.code].name} · rgb(${c.rgb.join(",")})`;
       const lbl = document.createElement("span");
-      lbl.className = "lbl";
+      const cls = labelClass(c);
+      lbl.className = "lbl" + (cls ? " " + cls : "");
       lbl.textContent = c.code;
       cell.appendChild(lbl);
       grid.appendChild(cell);
@@ -680,7 +828,7 @@
     facesEl.innerHTML = "";
     if (!face) { facesEl.innerHTML = '<div class="empty">No cube face detected.</div>'; return; }
     const title = face.detected
-      ? `Detected face — located via ${face.stickerCount ?? 0} sticker(s)`
+      ? `Detected face — ${face.stickerCount ?? 0} sticker(s)`
       : `Face (center crop — low confidence)`;
     facesEl.appendChild(buildFaceCard(face, title));
   }
@@ -705,6 +853,29 @@
     try { document.execCommand("copy"); } catch (_) {}
     document.body.removeChild(ta);
     done();
+  }
+
+  // Render the top-of-panel summary card (X faces via <method>).
+  function renderSummary(faces, method) {
+    if (!summaryEl) return;
+    if (!faces || faces.length === 0) {
+      summaryEl.hidden = true;
+      summaryEl.innerHTML = "";
+      resultsMetaEl.textContent = "No faces detected";
+      return;
+    }
+    summaryEl.hidden = false;
+    const n = faces.length;
+    const label = `${n} face${n === 1 ? "" : "s"} detected`;
+    summaryEl.innerHTML = `
+      <svg class="ico" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 6 9 17l-5-5"/>
+      </svg>
+      <div class="body">
+        <b>${label}</b>
+        <p>via <code>${method}</code>${state.wireframe ? " · drag the dots to refine" : ""}</p>
+      </div>`;
+    resultsMetaEl.textContent = label;
   }
 
   // Render intermediate detection steps into the collapsed debug section.

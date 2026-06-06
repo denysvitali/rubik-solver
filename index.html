@@ -3,217 +3,638 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Rubik's Cube Detector</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🧊</text></svg>" />
+<title>Cube Lens — Rubik's Cube Face Detector</title>
 <style>
   :root {
-    --bg: #0f1115;
-    --panel: #181b22;
-    --panel2: #1f2430;
-    --accent: #4f8cff;
-    --text: #e6e9ef;
-    --muted: #9aa3b2;
-    --border: #2a2f3a;
+    --bg: #faf8f3;
+    --surface: #ffffff;
+    --surface-2: #fbfaf6;
+    --surface-3: #f5f3ec;
+    --ink: #0c0c0d;
+    --ink-2: #1f2024;
+    --muted: #6b6f7a;
+    --muted-2: #9aa0ac;
+    --line: #e8e4da;
+    --line-strong: #d6d1c4;
+    --accent: #2563eb;
+    --accent-soft: #eff4ff;
+    --success: #047857;
+    --success-soft: #d1fae5;
+    --danger: #b91c1c;
+    --danger-soft: #fee2e2;
   }
   * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
   body {
-    margin: 0;
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    background: var(--bg);
-    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
     line-height: 1.5;
+    color: var(--ink);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
   }
-  header {
-    padding: 20px 24px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  header h1 { font-size: 20px; margin: 0; }
-  header .cube-ico { font-size: 26px; }
-  header .status {
-    margin-left: auto;
-    font-size: 13px;
-    color: var(--muted);
-  }
-  header .status.ready { color: #5fd97f; }
-  main {
-    max-width: 1100px;
+
+  .app {
+    max-width: 1240px;
     margin: 0 auto;
-    padding: 24px;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 24px;
+    padding: 20px 24px 60px;
   }
-  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
-  .panel {
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 18px;
+
+  /* ===== Header ===== */
+  .topbar {
+    overflow: hidden;
+    margin-bottom: 22px;
   }
-  .panel h2 { margin: 0 0 12px; font-size: 15px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  .brand {
+    float: left;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -.01em;
+    color: var(--ink);
+  }
+  .brand .logo {
+    display: inline-block;
+    width: 34px; height: 34px;
+    border-radius: 9px;
+    background: linear-gradient(135deg, #f3f4f6, #e7ebf2);
+    box-shadow: 0 1px 2px rgba(15,17,21,.04), inset 0 0 0 1px rgba(0,0,0,.04);
+    vertical-align: middle;
+    margin-right: 10px;
+    text-align: center;
+    line-height: 34px;
+  }
+  .brand .logo svg { vertical-align: middle; }
+  .brand .name { vertical-align: middle; }
+  .brand .name b { font-weight: 800; }
+  .brand .tag {
+    font-size: 12px;
+    color: var(--muted);
+    border-left: 1px solid var(--line-strong);
+    padding-left: 10px;
+    margin-left: 10px;
+    font-weight: 400;
+    vertical-align: middle;
+  }
+  .status {
+    float: right;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12.5px;
+    font-weight: 500;
+    box-shadow: 0 1px 2px rgba(15,17,21,.04);
+  }
+  .status .dot {
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--muted-2);
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  .status.ready { color: var(--success); background: var(--success-soft); border-color: #a7e6c7; }
+  .status.ready .dot { background: var(--success); }
+  .status.busy { color: var(--accent); background: var(--accent-soft); border-color: #c7d7fb; }
+  .status.busy .dot { background: var(--accent); }
+  .status.err { color: var(--danger); background: var(--danger-soft); border-color: #f5b8b8; }
+  .status.err .dot { background: var(--danger); }
+
+  /* ===== Hero layout (two columns) ===== */
+  .hero {
+    overflow: hidden;
+    margin-bottom: 22px;
+  }
+  .canvas-card, .results-panel {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    box-shadow: 0 1px 2px rgba(15,17,21,.04);
+  }
+  .canvas-card {
+    float: left;
+    width: calc(50% - 11px);
+    min-height: 540px;
+  }
+  .results-panel {
+    float: right;
+    width: calc(50% - 11px);
+    min-height: 540px;
+  }
+  @media (max-width: 900px) {
+    .canvas-card, .results-panel {
+      float: none;
+      width: 100%;
+      margin-bottom: 22px;
+    }
+  }
+
+  /* ===== Panel head ===== */
+  .panel-head {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--line);
+    overflow: hidden;
+  }
+  .panel-head h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink-2);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    float: left;
+  }
+  .panel-head .panel-sub {
+    float: right;
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 1px;
+  }
+
+  /* ===== Drop zone ===== */
+  .drop-card {
+    padding: 0;
+  }
   .drop {
-    border: 2px dashed var(--border);
-    border-radius: 10px;
-    padding: 28px;
+    display: block;
+    padding: 40px 26px;
     text-align: center;
     cursor: pointer;
-    transition: border-color .2s, background .2s;
   }
-  .drop:hover, .drop.drag { border-color: var(--accent); background: var(--panel2); }
-  .drop p { margin: 6px 0; color: var(--muted); font-size: 14px; }
-  input[type=file] { display: none; }
-  .btn {
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    padding: 9px 16px;
-    font-size: 14px;
-    cursor: pointer;
-    font-weight: 600;
+  .drop-inner {
+    max-width: 380px;
+    margin: 0 auto;
   }
-  .btn:disabled { opacity: .5; cursor: default; }
-  .btn.secondary { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
-  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
-  canvas, #srcImg {
-    max-width: 100%;
-    border-radius: 8px;
+  .drop-illus {
+    width: 168px; height: 168px;
     display: block;
+    margin: 0 auto 18px;
   }
-  #canvasWrap { position: relative; margin-top: 12px; }
-  .canvas-loading {
-    display: none;
-    position: absolute; inset: 0;
-    align-items: center; justify-content: center;
-    background: rgba(15,17,21,0.85);
+  .drop-title {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -.01em;
+    margin: 0 0 6px;
+    color: var(--ink);
+  }
+  .drop-sub {
+    color: var(--muted);
+    font-size: 14px;
+    margin: 0 0 18px;
+  }
+  .drop-cta {
+    display: inline-block;
+    padding: 10px 18px;
+    background: var(--ink);
+    color: #fff;
+    border-radius: 999px;
+    font-size: 13.5px;
+    font-weight: 600;
+    text-decoration: none;
+  }
+  .drop-or {
+    color: var(--muted-2);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    margin: 18px 0 10px;
+  }
+  .drop-samples {
+    text-align: center;
+  }
+  .sample-chip {
+    display: inline-block;
+    padding: 6px 12px;
+    margin: 0 4px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .sample-chip .swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    background: linear-gradient(135deg, #ef4444 50%, #f3f4f6 50%);
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+  .sample-chip:nth-child(2) .swatch {
+    background: linear-gradient(135deg, #10b981 33%, #3b82f6 33%, #3b82f6 66%, #ef4444 66%);
+  }
+  .drop-hint {
+    margin-top: 18px;
+    font-size: 12px;
+    color: var(--muted-2);
+  }
+  input[type=file] { display: none; }
+
+  /* ===== Image canvas area ===== */
+  .canvas-toolbar {
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--line);
+    overflow: hidden;
+  }
+  .canvas-toolbar .btn { margin-right: 8px; }
+  .canvas-meta {
+    float: right;
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 6px;
+  }
+  .canvas-meta .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--surface-3);
+    border: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--muted);
+    margin-right: 6px;
+  }
+  #canvasWrap {
+    margin: 16px;
+    background:
+      linear-gradient(45deg, var(--surface-3) 25%, transparent 25%, transparent 75%, var(--surface-3) 75%),
+      linear-gradient(45deg, var(--surface-3) 25%, transparent 25%, transparent 75%, var(--surface-3) 75%);
+    background-size: 18px 18px;
+    background-position: 0 0, 9px 9px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    min-height: 400px;
+    overflow: hidden;
+    text-align: center;
+  }
+  #canvasWrap canvas { max-width: 100%; max-height: 500px; display: inline-block; margin: 10px 0; }
+
+  /* ===== Buttons ===== */
+  .btn {
+    display: inline-block;
+    background: var(--ink);
+    color: #fff;
+    border: 1px solid var(--ink);
     border-radius: 8px;
-    color: var(--text);
-    font-size: 15px;
-    gap: 10px;
-    z-index: 10;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
   }
-  #canvasWrap.loading .canvas-loading { display: flex; }
-  .canvas-loading .spinner { width: 18px; height: 18px; border-width: 2.5px; border-top-color: var(--accent); }
-  .hint { font-size: 12px; color: var(--muted); margin-top: 8px; }
-  .faces { display: flex; flex-direction: column; gap: 18px; }
-  .face-card { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
-  .face-card h3 { margin: 0; font-size: 13px; color: var(--muted); }
-  .face-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
-  .copy-btn { padding: 5px 12px; font-size: 12px; }
-  .grid3 {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
-    width: 168px;
+  .btn.secondary {
+    background: var(--surface);
+    color: var(--ink-2);
+    border-color: var(--line);
   }
-  .cell {
-    aspect-ratio: 1;
-    border-radius: 6px;
-    border: 2px solid rgba(0,0,0,.35);
-    box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
-    position: relative;
+  .btn.tiny { padding: 4px 10px; font-size: 11.5px; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* ===== Progress ===== */
+  .progress-wrap {
+    display: none;
+    margin: 0 16px 16px;
   }
-  .cell .lbl {
-    position: absolute; inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 11px; font-weight: 700; color: rgba(0,0,0,.55);
-  }
-  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--muted); }
-  .legend span { display: inline-flex; align-items: center; gap: 5px; }
-  .legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; border: 1px solid rgba(255,255,255,.2); }
-  .empty { color: var(--muted); font-size: 14px; padding: 20px 0; text-align: center; }
-  .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--border); border-top-color: var(--accent); border-radius:50%; animation: spin .7s linear infinite; vertical-align:-2px; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .progress-wrap { margin-top: 12px; display: none; }
   .progress-wrap.active { display: block; }
   .progress-bar-bg {
-    height: 6px;
-    background: var(--panel2);
-    border-radius: 3px;
+    height: 5px;
+    background: var(--surface-3);
+    border-radius: 999px;
     overflow: hidden;
-    border: 1px solid var(--border);
   }
   .progress-bar-fill {
     height: 100%;
     width: 0%;
     background: var(--accent);
-    border-radius: 3px;
-    transition: width .4s ease;
+    border-radius: 999px;
+    transition: width .3s;
   }
   .progress-label {
     font-size: 12px;
     color: var(--muted);
     margin-top: 6px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
   }
-  details { margin-top: 14px; }
-  summary { cursor: pointer; color: var(--muted); font-size: 13px; }
-  .dbg-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
-  .dbg-grid figure { margin: 0; }
-  .dbg-grid canvas { border: 1px solid var(--border); border-radius: 6px; display: block; background: #000; }
-  .dbg-grid figcaption { font-size: 11px; color: var(--muted); margin-top: 4px; max-width: 240px; }
-  pre { background: #0b0d11; padding: 10px; border-radius: 8px; overflow:auto; font-size: 11px; color: var(--muted); }
+
+  /* ===== Faces panel ===== */
+  .faces {
+    padding: 18px;
+  }
+  .face-card {
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+  .face-card:last-child { margin-bottom: 0; }
+  .face-head {
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .face-head .swatch {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border-radius: 3px;
+    vertical-align: middle;
+    margin-right: 8px;
+  }
+  .face-head h3 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink-2);
+    display: inline-block;
+    vertical-align: middle;
+  }
+  .face-head .stats {
+    font-size: 11.5px;
+    color: var(--muted);
+    display: inline-block;
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  .face-head .copy-btn { float: right; }
+
+  .grid3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    width: 168px;
+    margin: 0 auto;
+  }
+  .cell {
+    aspect-ratio: 1;
+    border-radius: 6px;
+    border: 2px solid rgba(0,0,0,.28);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.18);
+    position: relative;
+  }
+  .cell .lbl {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700;
+    color: rgba(0,0,0,.55);
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 40px 20px;
+    color: var(--muted);
+  }
+  .empty-state h3 {
+    margin: 0 0 4px;
+    font-size: 15px;
+    color: var(--ink-2);
+    font-weight: 600;
+  }
+  .empty-state p { margin: 0; font-size: 13px; }
+  .empty-state .empty-illus { width: 64px; height: 64px; opacity: .5; margin-bottom: 8px; }
+
+  .summary {
+    margin: 0 18px;
+    padding: 12px 14px;
+    background: var(--accent-soft);
+    border: 1px solid #c7d7fb;
+    border-radius: 10px;
+    margin-bottom: 14px;
+    font-size: 13px;
+  }
+  .summary b { color: var(--ink); font-weight: 600; }
+  .summary code {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    background: rgba(0,0,0,.04);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+
+  .legend {
+    padding: 14px 18px;
+    border-top: 1px solid var(--line);
+    text-align: center;
+  }
+  .legend span {
+    display: inline-block;
+    padding: 3px 9px 3px 7px;
+    margin: 2px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: 11.5px;
+    color: var(--muted);
+  }
+  .legend i {
+    display: inline-block;
+    width: 12px; height: 12px;
+    border-radius: 3px;
+    margin-right: 6px;
+    vertical-align: middle;
+    border: 1px solid rgba(0,0,0,.12);
+  }
+
+  /* ===== Details ===== */
+  .canvas-card .panel-body { padding: 0; }
+  details.collapse {
+    border-top: 1px solid var(--line);
+    padding: 0;
+  }
+  details.collapse summary {
+    padding: 12px 18px;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 12.5px;
+    font-weight: 500;
+    list-style: none;
+  }
+  details.collapse summary::-webkit-details-marker { display: none; }
+  details.collapse summary::before {
+    content: "▸ ";
+    color: var(--muted-2);
+  }
+  details.collapse[open] > summary::before { content: "▾ "; }
+  pre {
+    margin: 0 18px 14px;
+    padding: 12px;
+    background: var(--surface-3);
+    border-radius: 8px;
+    overflow: auto;
+    font-size: 11.5px;
+    color: var(--ink-2);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    line-height: 1.6;
+  }
+  pre.app-log { max-height: 200px; margin-top: 0; }
+  .log-wrap { position: relative; }
+  .log-wrap .copy-btn { position: absolute; top: 18px; right: 22px; z-index: 1; }
+
+  .spinner {
+    display: inline-block;
+    width: 14px; height: 14px;
+    border: 2px solid var(--line);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ===== Drag overlay ===== */
+  .drop-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(250, 248, 243, .92);
+    display: none;
+    align-items: center;
+    justify-content: center;
+  }
+  .drop-overlay[hidden] { display: none; }
+  .drop-overlay-card {
+    background: #fff;
+    border: 2px dashed var(--accent);
+    border-radius: 18px;
+    padding: 40px 60px;
+    box-shadow: 0 20px 60px rgba(0,0,0,.12);
+    text-align: center;
+  }
+  .drop-overlay-emoji { font-size: 48px; }
+  .drop-overlay-title { font-size: 18px; font-weight: 600; color: var(--ink); margin-top: 8px; }
+  .drop-overlay-sub { font-size: 13px; color: var(--muted); margin-top: 4px; }
 </style>
 </head>
 <body>
-<header>
-  <span class="cube-ico">🧊</span>
-  <h1>Rubik's Cube Detector</h1>
-  <span class="status" id="status">Loading OpenCV…</span>
-</header>
-<main>
-  <section class="panel">
-    <h2>Input</h2>
-    <label class="drop" id="drop">
-      <input type="file" id="file" accept="image/*" />
-      <p style="font-size:30px;margin:0">🖼️</p>
-      <p><strong>Click or drop a cube photo</strong></p>
-      <p>or use the sample image</p>
-    </label>
-    <div class="row">
-      <button class="btn secondary" id="sampleBtn">Load sample</button>
-      <button class="btn" id="detectBtn" disabled>Detect cube</button>
-      <button class="btn secondary" id="pickBtn" disabled title="Click the 4 corners of one cube face — works for angled/perspective shots">Pick corners</button>
+<div class="app">
+
+  <!-- ===== Top bar ===== -->
+  <div class="topbar">
+    <div class="brand">
+      <span class="logo">
+        <svg width="22" height="22" viewBox="0 0 22 22" fill="none" stroke="currentColor" stroke-width="1.5">
+          <rect x="2" y="2" width="8" height="8" rx="1.4" fill="#10b981" stroke="none"/>
+          <rect x="12" y="2" width="8" height="8" rx="1.4" fill="#fbbf24" stroke="none"/>
+          <rect x="2" y="12" width="8" height="8" rx="1.4" fill="#fb923c" stroke="none"/>
+          <rect x="12" y="12" width="8" height="8" rx="1.4" fill="#3b82f6" stroke="none"/>
+          <path d="M11 0v22M0 11h22"/>
+        </svg>
+      </span><span class="name">Cube <b>Lens</b></span><span class="tag">Rubik's cube face detector</span>
     </div>
-    <div id="canvasWrap">
-      <div class="canvas-loading" id="canvasLoading"><span class="spinner"></span> Loading image…</div>
-      <canvas id="overlay"></canvas>
+    <div id="status" class="status"><span class="dot"></span><span id="statusText">Loading OpenCV…</span></div>
+  </div>
+
+  <!-- ===== Hero / work area ===== -->
+  <div class="hero">
+
+    <!-- Left: image canvas OR drop zone -->
+    <div id="canvasCard" class="canvas-card" hidden>
+      <div class="canvas-toolbar">
+        <button class="btn" id="detectBtn" disabled>Detect cube</button>
+        <button class="btn secondary" id="pickBtn" disabled title="Click the 4 corners of one cube face">Pick corners</button>
+        <button class="btn secondary" id="newImageBtn" title="Load a different image">New image</button>
+        <div class="canvas-meta">
+          <span class="badge" id="imgDims">—</span>
+          <span id="imgSize"></span>
+        </div>
+      </div>
+
+      <div id="canvasWrap">
+        <canvas id="overlay"></canvas>
+      </div>
+
       <div class="progress-wrap" id="progressWrap">
         <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill"></div></div>
-        <div class="progress-label"><span class="spinner"></span> <span id="progressLabel">Preparing…</span></div>
+        <div class="progress-label"><span class="spinner"></span> <span id="progressLabel">Preparing…</span> <span id="progressPct" style="float:right"></span></div>
       </div>
-    </div>
-    <p class="hint">Auto-detect handles flat-sticker cubes (sticker grid) and glossy/stickerless angled cubes (geometric silhouette, up to 3 faces). For angled cubes you can <strong>drag the 7 dots</strong> (near-corner + outer corners) to snap the wireframe onto the cube — faces re-read on release. <strong>Pick corners</strong> is a manual single-face fallback.</p>
-    <details>
-      <summary>Diagnostics</summary>
-      <pre id="diag">—</pre>
-    </details>
-    <details id="debugDetails" hidden>
-      <summary>Debug — intermediate steps</summary>
-      <div id="debugSteps" class="dbg-grid"></div>
-    </details>
-    <details id="logDetails">
-      <summary>App log</summary>
-      <div style="position:relative">
-        <pre id="appLog" style="max-height:200px;overflow:auto;font-size:11px">—</pre>
-        <button id="copyLogBtn" class="btn secondary copy-btn" style="position:absolute;top:4px;right:4px;padding:3px 8px;font-size:11px">Copy</button>
-      </div>
-    </details>
-  </section>
 
-  <section class="panel">
-    <h2>Detected Face(s)</h2>
-    <div id="faces" class="faces">
-      <div class="empty">No cube detected yet. Load an image and press <strong>Detect cube</strong>.</div>
+      <div class="panel-body">
+        <details class="collapse" id="diagDetails">
+          <summary>Detection diagnostics</summary>
+          <pre id="diag">—</pre>
+        </details>
+        <details class="collapse" id="debugDetails" hidden>
+          <summary>Debug — intermediate steps</summary>
+          <pre id="debugSteps" style="display:none"></pre>
+          <div id="debugSteps" class="dbg-grid"></div>
+        </details>
+        <details class="collapse" id="logDetails">
+          <summary>App log</summary>
+          <div class="log-wrap">
+            <button class="btn secondary copy-btn" id="copyLogBtn">Copy</button>
+            <pre id="appLog" class="app-log">—</pre>
+          </div>
+        </details>
+      </div>
     </div>
-    <div class="legend" id="legend"></div>
-  </section>
-</main>
+
+    <!-- Drop zone (default view) -->
+    <div id="dropCard" class="canvas-card drop-card">
+      <label class="drop" id="drop">
+        <input type="file" id="file" accept="image/*" />
+        <div class="drop-inner">
+          <svg class="drop-illus" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="topG" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#f3f4f6"/>
+              </linearGradient>
+              <linearGradient id="leftG" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#fef3c7"/><stop offset="1" stop-color="#fbbf24"/>
+              </linearGradient>
+              <linearGradient id="rightG" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0" stop-color="#fecaca"/><stop offset="1" stop-color="#ef4444"/>
+              </linearGradient>
+            </defs>
+            <ellipse cx="100" cy="172" rx="56" ry="6" fill="#000" opacity=".08"/>
+            <polygon points="100,30 168,65 100,100 32,65" fill="url(#topG)" stroke="#0c0c0d" stroke-width="2"/>
+            <polygon points="32,65 100,100 100,162 32,127" fill="url(#leftG)" stroke="#0c0c0d" stroke-width="2"/>
+            <polygon points="168,65 100,100 100,162 168,127" fill="url(#rightG)" stroke="#0c0c0d" stroke-width="2"/>
+            <polygon points="100,68 134,86 100,100 66,86" fill="#10b981" opacity=".85"/>
+            <g stroke="#0c0c0d" stroke-width="1.2" opacity=".55" fill="none">
+              <path d="M66 50 L100 68 L134 86 M66 86 L100 100 L134 86 M46 72 L114 107 M78 55 L146 90 M100 68 L100 100 M66 83 L66 145 M100 100 L100 162 M46 72 L46 134 M32 96 L100 131 M32 127 L100 162 M134 83 L134 145 M154 72 L154 134 M100 131 L168 96 M100 162 L168 127"/>
+            </g>
+          </svg>
+          <h1 class="drop-title">Drop a cube photo here</h1>
+          <p class="drop-sub">or click to browse — JPG, PNG, or WebP</p>
+          <span class="drop-cta">Choose a photo</span>
+          <p class="drop-or">or try</p>
+          <div class="drop-samples">
+            <button class="sample-chip" data-sample="sample.jpg"><span class="swatch"></span>Flat sticker cube</button>
+            <button class="sample-chip" data-sample="algorithms.png"><span class="swatch"></span>Angled 3-face cube</button>
+          </div>
+          <p class="drop-hint">All processing happens locally in your browser — no upload, no server.</p>
+        </div>
+      </label>
+    </div>
+
+    <!-- ===== Right column: results ===== -->
+    <div class="results-panel">
+      <div class="panel-head">
+        <h2>Detected faces</h2>
+        <span class="panel-sub" id="resultsMeta">No image yet</span>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <div id="summary" hidden style="margin:14px 18px 0"></div>
+        <div id="faces" class="faces">
+          <div class="empty-state">
+            <svg class="empty-illus" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="8" y="8" width="48" height="48" rx="8" fill="#f3f4f6" stroke="#d6d1c4" stroke-width="1.5" stroke-dasharray="3 3"/>
+              <path d="M22 32h20M32 22v20" stroke="#9aa0ac" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+            <h3>No faces detected yet</h3>
+            <p>Load a cube photo, then press <b>Detect cube</b>.</p>
+          </div>
+        </div>
+        <div class="legend" id="legend"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="dropOverlay" class="drop-overlay" hidden>
+  <div class="drop-overlay-card">
+    <div class="drop-overlay-emoji">📥</div>
+    <div class="drop-overlay-title">Drop to load</div>
+    <div class="drop-overlay-sub">Release to detect the cube</div>
+  </div>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
