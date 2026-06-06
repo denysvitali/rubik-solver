@@ -448,14 +448,21 @@
       ax2x = -ax1y; ax2y = ax1x;
     }
 
-    // 3. Project stickers onto both axes (orthogonal dot-product). This is the
-    //    original, validated projection for a full 9-sticker face; the partial
-    //    -face branch below switches to an exact oblique decomposition where it
-    //    matters (a strongly foreshortened face).
+    // 3. Decompose each sticker offset in the (ax1, ax2) basis by solving the
+    //    2×2 system [ax1 ax2]·[u;v]=Δ. The two face edge directions are NOT
+    //    perpendicular in the image — perspective foreshortening tilts them
+    //    (a strongly angled face's edges project tens of degrees off square) —
+    //    so an orthogonal dot-product yields the wrong (u,v): the rows stop
+    //    separating and the extrapolated corners land off the face (a "weird
+    //    rectangle"). The oblique solve gives true grid coordinates, exact
+    //    under affine projection and the consistent inverse of the corner
+    //    reconstruction in step 8.
+    const adet = ax1x * ax2y - ax1y * ax2x;
+    if (Math.abs(adet) < 1e-6) return null; // axes collinear — degenerate
     const proj = stickers.map((s) => ({
       sticker: s,
-      u: (s.cx - mx) * ax1x + (s.cy - my) * ax1y,
-      v: (s.cx - mx) * ax2x + (s.cy - my) * ax2y,
+      u: ((s.cx - mx) * ax2y - (s.cy - my) * ax2x) / adet,
+      v: (ax1x * (s.cy - my) - ax1y * (s.cx - mx)) / adet,
     }));
 
     // 4. Cluster projections into 3 groups along each axis. The previous
@@ -511,23 +518,12 @@
       colCenters = colGroups.map((g) => g.reduce((s, p) => s + p.u, 0) / g.length);
       rowCenters = rowGroups.map((g) => g.reduce((s, p) => s + p.v, 0) / g.length);
     } else {
-      // Partial face (5–8 stickers, e.g. one sticker occluded/undetected).
-      // Decompose offsets in the OBLIQUE (ax1, ax2) basis: the two edge
-      // directions are not perpendicular under perspective (a top face's edges
-      // project ~46° off square), so an orthogonal dot-product smears the rows
-      // together; solving [ax1 ax2]·[u;v]=Δ recovers exact grid coordinates
-      // (and is the consistent inverse of the corner reconstruction below).
-      // Then 1D k-means finds the 3 occupied lines on each axis — robust to the
-      // foreshortened row pitch differing from the sticker size. Every line
-      // must be populated so we never invent a missing row/column.
-      const adet = ax1x * ax2y - ax1y * ax2x;
-      if (Math.abs(adet) < 1e-6) return null; // axes collinear — degenerate
-      const obl = stickers.map((s) => ({
-        u: ((s.cx - mx) * ax2y - (s.cy - my) * ax2x) / adet,
-        v: (ax1x * (s.cy - my) - ax1y * (s.cx - mx)) / adet,
-      }));
+      // Partial face (5–8 stickers, e.g. one sticker occluded/undetected):
+      // 1D k-means into 3 lines on each axis, robust to the foreshortened row
+      // pitch differing from the sticker size. Every line must be populated so
+      // we never invent a missing row/column.
       const fitAxis = (key) => {
-        const km = kmeans1D(obl.map((p) => p[key]), 3);
+        const km = kmeans1D(proj.map((p) => p[key]), 3);
         if (!km) return null;
         const cnt = [0, 0, 0];
         for (const a of km.assign) cnt[a]++;
@@ -805,9 +801,15 @@
     // reject any grid whose corners are outside the image — degenerate fits
     // produce corners hundreds of px past the edge and the warped sample
     // then reads across face boundaries.
+    // Reject degenerate fits whose corners land far past the image, but allow
+    // a small margin: a valid face near the frame edge extrapolates its border
+    // corner a few px outside (and the oblique grid solve can push a correct
+    // face ~1-3% out), while a fit that has wandered across face boundaries
+    // lands 15%+ out. The margin keeps the good face and still drops the junk.
+    const boundsMargin = 0.08 * Math.max(W, H);
     const cornersInBounds = (grid) => {
       for (const c of grid.corners) {
-        if (c.x < 0 || c.x > W || c.y < 0 || c.y > H) return false;
+        if (c.x < -boundsMargin || c.x > W + boundsMargin || c.y < -boundsMargin || c.y > H + boundsMargin) return false;
       }
       return true;
     };
@@ -844,6 +846,7 @@
     // and we never find the actual cube.
     const faceColorsCubeLike = (corners) => {
       const codes = new Set();
+      let satSum = 0, nSat = 0;
       for (let gy = 0; gy < 3; gy++) {
         for (let gx = 0; gx < 3; gx++) {
           const u = (gx + 0.5) / 3, v = (gy + 0.5) / 3;
@@ -852,10 +855,16 @@
           const x = Math.max(0, Math.min(W - 1, Math.round(cu)));
           const y = Math.max(0, Math.min(H - 1, Math.round(cv)));
           const i = (y * W + x) * 4;
-          codes.add(classifyColor(wd[i], wd[i + 1], wd[i + 2]));
+          const r = wd[i], g = wd[i + 1], b = wd[i + 2], mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+          satSum += mx ? (mx - mn) / mx : 0; nSat++;
+          codes.add(classifyColor(r, g, b));
         }
       }
-      return codes.size >= 3;
+      // A real cube face is either multi-coloured (a scrambled face, ≥3 codes)
+      // or a uniformly VIVID single colour (a solved face — e.g. the 9 red
+      // stickers). A paper algorithm-diagram grid or a desk reflection reads
+      // desaturated, so a low-saturation uniform fit is still rejected.
+      return codes.size >= 3 || satSum / Math.max(1, nSat) > 0.5;
     };
     const tryFit = (stk) => {
       const grid = fitGrid(stk);
