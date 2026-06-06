@@ -98,9 +98,9 @@ if (cv) {
       Pipeline.PIPELINE_STEPS.map((s) => s.id),
       [
         "sticker-faces",
+        "geometric-silhouette",
         "single-face-fallback",
         "learned-face-localization",
-        "geometric-silhouette",
         "low-confidence-single-face",
       ],
     );

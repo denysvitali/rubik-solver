@@ -13,9 +13,9 @@
 })(typeof self !== "undefined" ? self : globalThis, function (steps) {
   const PIPELINE_STEPS = [
     steps.stickerFaces,
+    steps.geometricSilhouette,
     steps.singleFaceFallback,
     steps.learnedFaceLocalization,
-    steps.geometricSilhouette,
     steps.lowConfidenceSingleFace,
   ];
 
