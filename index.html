@@ -570,42 +570,47 @@
       <label class="drop" id="drop">
         <input type="file" id="file" accept="image/*" />
         <div class="drop-inner">
-          <!-- isometric cube: three visible faces, each a true 3×3 of inset
-               sticker quads; left/right faces darkened for depth. -->
-          <svg class="drop-illus" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
-            <ellipse cx="100" cy="178" rx="62" ry="7" fill="#000" opacity=".10"/>
-            <!-- top face -->
-            <polygon points="100.0,32.3 118.1,41.7 100.0,51.0 81.9,41.7" fill="#f5f5f5" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="122.7,44.0 140.8,53.3 122.7,62.7 104.5,53.3" fill="#d11a1a" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="145.3,55.7 163.5,65.0 145.3,74.3 127.2,65.0" fill="#1faa46" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="77.3,44.0 95.5,53.3 77.3,62.7 59.2,53.3" fill="#ffd500" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="100.0,55.7 118.1,65.0 100.0,74.3 81.9,65.0" fill="#f5f5f5" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="122.7,67.3 140.8,76.7 122.7,86.0 104.5,76.7" fill="#175fd6" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="54.7,55.7 72.8,65.0 54.7,74.3 36.5,65.0" fill="#1faa46" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="77.3,67.3 95.5,76.7 77.3,86.0 59.2,76.7" fill="#ff7a1a" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="100.0,79.0 118.1,88.3 100.0,97.7 81.9,88.3" fill="#f5f5f5" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <!-- left face (shaded ×0.80) -->
-            <polygon points="34.3,68.2 52.4,77.6 52.4,94.1 34.3,84.8" fill="#a71515" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="56.9,79.9 75.1,89.2 75.1,105.8 56.9,96.4" fill="#ccaa00" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="79.6,91.6 97.7,100.9 97.7,117.4 79.6,108.1" fill="#124cab" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="34.3,88.9 52.4,98.2 52.4,114.8 34.3,105.4" fill="#c4c4c4" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="56.9,100.6 75.1,109.9 75.1,126.4 56.9,117.1" fill="#cc6215" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="79.6,112.2 97.7,121.6 97.7,138.1 79.6,128.8" fill="#198838" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="34.3,109.6 52.4,118.9 52.4,135.4 34.3,126.1" fill="#124cab" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="56.9,121.2 75.1,130.6 75.1,147.1 56.9,137.8" fill="#a71515" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="79.6,132.9 97.7,142.2 97.7,158.8 79.6,149.4" fill="#ccaa00" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <!-- right face (shaded ×0.64) -->
-            <polygon points="165.7,68.2 147.6,77.6 147.6,94.1 165.7,84.8" fill="#146d2d" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="143.1,79.9 124.9,89.2 124.9,105.8 143.1,96.4" fill="#0f3d89" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="120.4,91.6 102.3,100.9 102.3,117.4 120.4,108.1" fill="#a34e11" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="165.7,88.9 147.6,98.2 147.6,114.8 165.7,105.4" fill="#861111" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="143.1,100.6 124.9,109.9 124.9,126.4 143.1,117.1" fill="#146d2d" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="120.4,112.2 102.3,121.6 102.3,138.1 120.4,128.8" fill="#9d9d9d" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="165.7,109.6 147.6,118.9 147.6,135.4 165.7,126.1" fill="#a38800" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="143.1,121.2 124.9,130.6 124.9,147.1 143.1,137.8" fill="#a34e11" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <polygon points="120.4,132.9 102.3,142.2 102.3,158.8 120.4,149.4" fill="#0f3d89" stroke="#0c0c0d" stroke-width="1.4" stroke-linejoin="round"/>
-            <!-- cube silhouette -->
-            <polygon points="100,30 168,65 168,127 100,162 32,127 32,65" fill="none" stroke="#0c0c0d" stroke-width="2.4" stroke-linejoin="round"/>
+          <svg class="drop-illus" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">
+            <defs>
+              <style>
+                .di-green  { fill: #10B981; }
+                .di-yellow { fill: #FBBF24; }
+                .di-red    { fill: #EF4444; }
+                .di-white  { fill: #F9FAFB; }
+                .di-orange { fill: #F97316; }
+                .di-blue   { fill: #3B82F6; }
+                .di-outline { stroke: #111827; stroke-width: 4; stroke-linejoin: round; }
+              </style>
+            </defs>
+            <g class="di-outline">
+              <polygon class="di-green"  points="150,150 190,127 150,104 110,127" />
+              <polygon class="di-yellow" points="190,127 230,104 190,81 150,104" />
+              <polygon class="di-red"    points="230,104 270,81 230,58 190,81" />
+              <polygon class="di-white"  points="110,127 150,104 110,81 70,104" />
+              <polygon class="di-orange" points="150,104 190,81 150,58 110,81" />
+              <polygon class="di-blue"   points="190,81 230,58 190,35 150,58" />
+              <polygon class="di-yellow" points="70,104 110,81 70,58 30,81" />
+              <polygon class="di-red"    points="110,81 150,58 110,35 70,58" />
+              <polygon class="di-green"  points="150,58 190,35 150,12 110,35" />
+              <polygon class="di-blue"   points="150,150 110,127 110,173 150,196" />
+              <polygon class="di-red"    points="150,196 110,173 110,219 150,242" />
+              <polygon class="di-orange" points="150,242 110,219 110,265 150,288" />
+              <polygon class="di-yellow" points="110,127 70,104 70,150 110,173" />
+              <polygon class="di-white"  points="110,173 70,150 70,196 110,219" />
+              <polygon class="di-blue"   points="110,219 70,196 70,242 110,265" />
+              <polygon class="di-orange" points="70,104 30,81 30,127 70,150" />
+              <polygon class="di-green"  points="70,150 30,127 30,173 70,196" />
+              <polygon class="di-yellow" points="70,196 30,173 30,219 70,242" />
+              <polygon class="di-red"    points="150,150 190,127 190,173 150,196" />
+              <polygon class="di-white"  points="150,196 190,173 190,219 150,242" />
+              <polygon class="di-green"  points="150,242 190,219 190,265 150,288" />
+              <polygon class="di-white"  points="190,127 230,104 230,150 190,173" />
+              <polygon class="di-yellow" points="190,173 230,150 230,196 190,219" />
+              <polygon class="di-red"    points="190,219 230,196 230,242 190,265" />
+              <polygon class="di-blue"   points="230,104 270,81 270,127 230,150" />
+              <polygon class="di-green"  points="230,150 270,127 270,173 230,196" />
+              <polygon class="di-orange" points="230,196 270,173 270,219 230,242" />
+            </g>
           </svg>
           <h1 class="drop-title">Drop a cube photo here</h1>
           <p class="drop-sub">or click to browse — JPG, PNG, or WebP</p>
