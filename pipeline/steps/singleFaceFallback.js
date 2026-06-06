@@ -4,13 +4,21 @@
   root.RubikPipelineSteps = root.RubikPipelineSteps || {};
   root.RubikPipelineSteps.singleFaceFallback = step;
 })(typeof self !== "undefined" ? self : globalThis, function () {
+  const MIN_GREEN_BLUE_SUPPORTING_SQUARES = 9;
+
   function isStrong(result) {
-    return !!(
-      result &&
-      result.confident &&
-      result.method !== "center-crop" &&
-      result.stickerCount >= 2
-    );
+    if (
+      !result ||
+      !result.confident ||
+      result.method === "center-crop" ||
+      result.stickerCount < 2
+    ) {
+      return false;
+    }
+    if (result.method === "green/blue") {
+      return (result.squareCount || 0) >= MIN_GREEN_BLUE_SUPPORTING_SQUARES;
+    }
+    return true;
   }
 
   return {
@@ -23,7 +31,7 @@
       ctx.record(
         this,
         strong ? "accepted" : "skipped",
-        `${result.method}, ${result.stickerCount || 0} sticker(s)`,
+        `${result.method}, ${result.stickerCount || 0} sticker(s), ${result.squareCount || 0} square(s)`,
       );
       if (!strong) return null;
       return {

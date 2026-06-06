@@ -16,6 +16,12 @@ const CASES = [
     expected: "GRYGBOGYB",
   },
   {
+    name: "local rounded three-face photo",
+    path: "/home/workspace/IMG_20260602_233142_876.jpg",
+    format: "jpg",
+    expectedFaces: 3,
+  },
+  {
     name: "6071137",
     url: "https://s3.amazonaws.com/emuncloud-staticassets/productImages/sm075/hires/6071137.jpg",
     cache: "fixtures/6071137.jpg",
@@ -70,7 +76,7 @@ async function fetchWithTimeout(url, ms = 15000) {
 }
 
 async function loadImage(c) {
-  const cacheFile = new URL("./" + c.cache, import.meta.url);
+  const cacheFile = imagePath(c);
   if (c.url) fs.mkdirSync(new URL("./fixtures", import.meta.url), { recursive: true });
   if (c.url && !fs.existsSync(cacheFile)) {
     fs.writeFileSync(cacheFile, await fetchWithTimeout(c.url));
@@ -80,6 +86,10 @@ async function loadImage(c) {
     return await new Promise((res, rej) => new PNG().parse(raw, (e, x) => (e ? rej(e) : res(x))));
   }
   return jpeg.decode(raw, { useTArray: true });
+}
+
+function imagePath(c) {
+  return c.path || new URL("./" + c.cache, import.meta.url);
 }
 
 if (cv) {
@@ -97,7 +107,7 @@ if (cv) {
   });
 
   for (const c of CASES) {
-    const cacheFile = new URL("./" + c.cache, import.meta.url);
+    const cacheFile = imagePath(c);
     test(`pipeline: ${c.name}`, { skip: !c.url && !fs.existsSync(cacheFile) }, async () => {
       const img = await loadImage(c);
       const src = cv.matFromImageData({ data: img.data, width: img.width, height: img.height });
@@ -121,6 +131,9 @@ if (cv) {
       if (c.expected) {
         assert.equal(faces.length, 1);
         assert.equal(faces[0].cells.map((cell) => cell.code).join(""), c.expected);
+      }
+      if (c.expectedFaces) {
+        assert.equal(faces.length, c.expectedFaces);
       }
     });
   }
