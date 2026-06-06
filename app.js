@@ -527,39 +527,21 @@
     showProgress(10, "Preparing image…");
     await new Promise((r) => requestAnimationFrame(r)); // let the UI paint
 
-    // Primary: sticker-based multi-face (flat-sticker cubes, 1-2 faces).
-    // Fallback: top-down geometric (glossy/stickerless/borderless cubes, where
-    // per-piece segmentation fails — segments the cube silhouette and splits it
-    // into 1 or 3 face quads).
-    showProgress(30, "Searching for sticker grid…");
-    const debug = [];
-    let faces = RubikDetector.detectFaces(cv, full, { debug });
-    let geometric = false;
-    let singleResult = null;
-    if (faces.length === 0) {
-      showProgress(50, "Trying single-face sticker fallback…");
-      singleResult = RubikDetector.detectCube(cv, full);
-      const strongSingle =
-        singleResult.confident &&
-        singleResult.method !== "center-crop" &&
-        singleResult.stickerCount >= 2;
-      if (!strongSingle) {
-        // Neural segmentation for the silhouette (handles glossy/stickerless/
-        // white pieces + cluttered background). Falls back internally if absent.
+    showProgress(30, "Running detection pipeline…");
+    const pipelineResult = await RubikPipeline.runPipeline(cv, full, {
+      detector: RubikDetector,
+      segmentCube: async (mat) => {
         showProgress(60, "Segmenting cube (neural model)…");
-        let cubeMask = null;
         setStatus("busy", '<span class="spinner"></span> Segmenting cube (model)…');
-        try { cubeMask = await segmentCube(full); } catch (e) { console.error("segmentation failed", e); }
-        showProgress(75, "Fitting geometric silhouette…");
-        debug.length = 0;
-        faces = RubikDetector.detectFacesGeometric(cv, full, { debug, cubeMask });
-        if (cubeMask) cubeMask.delete();
-        geometric = faces.length > 0;
-      }
-    }
+        return await segmentCube(mat);
+      },
+    });
     showProgress(90, "Reading face colors…");
-    renderDebug(debug);
-    if (faces.length > 0) {
+    renderDebug([...(pipelineResult.pipeline || []), ...(pipelineResult.debug || [])]);
+
+    if (pipelineResult.kind === "multi" && pipelineResult.faces.length > 0) {
+      const faces = pipelineResult.faces;
+      const geometric = !!pipelineResult.geometric;
       full.delete();
       state.lastFaces = faces.map((f) => f.face);
       state.lastFace = state.lastFaces[0];
@@ -569,11 +551,12 @@
       if (state.wireframe) drawHandles(ds);
       renderMultiFaces(faces);
       renderLegend();
-      const method = geometric ? "geometric silhouette" : "sticker grid";
+      const method = pipelineResult.method;
       renderSummary(faces, method);
       diag.textContent =
         `source: ${state.srcImg.naturalWidth}x${state.srcImg.naturalHeight}` +
-        `\nmethod: ${geometric ? "auto multi-face (geometric silhouette)" : "auto multi-face (sticker grid)"}` +
+        `\nmethod: ${method}` +
+        `\npipeline: ${pipelineResult.pipeline.map((s) => `${s.id}:${s.status}`).join(" → ")}` +
         (geometric ? `\nsilhouette: ${faces[0].silhouette || "?"}  |  model: ${state.modelStatus}` : "") +
         `\nfaces detected: ${faces.length}` +
         faces.map((f, i) => `\n  face ${i + 1}: ${f.method || "grid"}`).join("") +
@@ -583,7 +566,7 @@
     }
 
     // Fallback: single fronto-parallel face.
-    const result = singleResult || RubikDetector.detectCube(cv, full);
+    const result = pipelineResult.result || RubikDetector.detectCube(cv, full);
     full.delete();
     state.lastFace = result.face;
     state.lastFaces = [result.face];
@@ -604,7 +587,8 @@
     diag.textContent =
       `source: ${state.srcImg.naturalWidth}x${state.srcImg.naturalHeight}` +
       `\nwork: ${result.workSize.w}x${result.workSize.h} (fixed)` +
-      `\nmethod: ${result.method} (single-face fallback)` +
+      `\nmethod: ${pipelineResult.method || result.method}` +
+      `\npipeline: ${pipelineResult.pipeline.map((s) => `${s.id}:${s.status}`).join(" → ")}` +
       `\nvivid squares: ${result.squareCount}` +
       `\nface stickers: ${result.stickerCount}` +
       regionInfo +
@@ -887,13 +871,28 @@
   }
 
   // Render intermediate detection steps into the collapsed debug section.
-  function renderDebug(imgs) {
+  function renderDebug(items) {
     const box = $("debugSteps"), details = $("debugDetails");
     if (!box || !details) return;
     box.innerHTML = "";
-    if (!imgs || !imgs.length) { details.setAttribute("hidden", ""); return; }
+    if (!items || !items.length) { details.setAttribute("hidden", ""); return; }
     details.removeAttribute("hidden");
-    for (const im of imgs) {
+    for (const item of items) {
+      if (item.type === "step") {
+        const div = document.createElement("div");
+        div.className = `dbg-step ${item.status}`;
+        const title = document.createElement("b");
+        title.textContent = item.name;
+        const meta = document.createElement("span");
+        meta.textContent = item.status;
+        const summary = document.createTextNode(item.summary || "");
+        div.appendChild(title);
+        div.appendChild(meta);
+        div.appendChild(summary);
+        box.appendChild(div);
+        continue;
+      }
+      const im = item;
       const fig = document.createElement("figure");
       const tmp = document.createElement("canvas");
       tmp.width = im.width; tmp.height = im.height;

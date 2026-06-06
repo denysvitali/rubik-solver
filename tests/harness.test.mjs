@@ -63,6 +63,7 @@ const result = await page.evaluate(() => {
   return {
     status,
     diag,
+    debugSteps: [...document.querySelectorAll("#debugSteps .dbg-step")].map((el) => el.textContent.trim()),
     cards: [...document.querySelectorAll(".face-card")].map((card) => ({
       title: card.querySelector("h3")?.textContent,
       cells: [...card.querySelectorAll(".cell")].map((c) => ({
@@ -97,6 +98,11 @@ test("harness: every face has exactly 9 cells with valid colour codes", () => {
       assert.match(c.code, CODES, `bad colour code in "${card.title}": ${c.code}`);
     }
   }
+});
+
+test("harness: pipeline diagnostics are rendered", () => {
+  assert.ok(result.debugSteps.length >= 1, `no pipeline debug steps; diag: ${result.diag}`);
+  assert.ok(result.debugSteps.some((step) => /accepted/i.test(step)), `no accepted pipeline step: ${result.debugSteps.join(" | ")}`);
 });
 
 // Optional golden check (skip in CI by default — exact grids are fragile

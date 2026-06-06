@@ -21,7 +21,16 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 # The token is recomputed only when one of the files' mtime changes — so
 # the browser can keep the file in its normal cache between edits (using
 # 304s), and the token flips the instant you save.
-BUSTED = ("detector.js", "app.js")
+BUSTED = (
+    "detector.js",
+    "pipeline/steps/stickerFaces.js",
+    "pipeline/steps/singleFaceFallback.js",
+    "pipeline/steps/learnedFaceLocalization.js",
+    "pipeline/steps/geometricSilhouette.js",
+    "pipeline/steps/lowConfidenceSingleFace.js",
+    "pipeline/pipeline.js",
+    "app.js",
+)
 _BUST_STATE = (0.0, "")  # (max_mtime, token)
 
 

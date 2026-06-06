@@ -30,6 +30,7 @@ jobs:
       # decode path inside the test).
       - run: node --test tests/unit.test.mjs
       - run: node --test tests/detect.test.mjs
+      - run: node --test tests/pipeline.test.mjs
       - run: IMG=algorithms.png node --test tests/detect.test.mjs
 
   browser:

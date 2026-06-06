@@ -466,6 +466,37 @@
   pre.app-log { max-height: 200px; margin-top: 0; }
   .log-wrap { position: relative; }
   .log-wrap .copy-btn { position: absolute; top: 18px; right: 22px; z-index: 1; }
+  .dbg-grid {
+    margin: 0 18px 14px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+  }
+  .dbg-step, .dbg-grid figure {
+    margin: 0;
+    padding: 10px;
+    background: var(--surface-3);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+  .dbg-step b, .dbg-grid figcaption {
+    display: block;
+    font-size: 11.5px;
+    color: var(--ink-2);
+    margin-bottom: 6px;
+  }
+  .dbg-step span {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--muted);
+    margin-right: 6px;
+  }
+  .dbg-step.accepted span { color: var(--success); border-color: #a7e6c7; background: var(--success-soft); }
+  .dbg-grid canvas { max-width: 100%; height: auto; display: block; }
 
   .spinner {
     display: inline-block;
@@ -552,7 +583,6 @@
         </details>
         <details class="collapse" id="debugDetails" hidden>
           <summary>Debug — intermediate steps</summary>
-          <pre id="debugSteps" style="display:none"></pre>
           <div id="debugSteps" class="dbg-grid"></div>
         </details>
         <details class="collapse" id="logDetails">
@@ -660,6 +690,12 @@
 <script src="https://cdn.jsdelivr.net/npm/@techstark/opencv-js@4.10.0-release.1/dist/opencv.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
 <script src="detector.js"></script>
+<script src="pipeline/steps/stickerFaces.js"></script>
+<script src="pipeline/steps/singleFaceFallback.js"></script>
+<script src="pipeline/steps/learnedFaceLocalization.js"></script>
+<script src="pipeline/steps/geometricSilhouette.js"></script>
+<script src="pipeline/steps/lowConfidenceSingleFace.js"></script>
+<script src="pipeline/pipeline.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

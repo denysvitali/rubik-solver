@@ -42,6 +42,8 @@ Colours are classified in HSV into W/Y/R/O/G/B.
 |------|------|
 | `index.html` | UI + styles |
 | `detector.js` | shared, DOM-free detection module (`RubikDetector`) |
+| `pipeline/pipeline.js` | readable ordered detection pipeline (`PIPELINE_STEPS`) |
+| `pipeline/steps/` | one file per pipeline step, browser + Node compatible |
 | `app.js` | browser glue: load image, run detector, draw overlay/result |
 | `server.py` | static server: no-cache, cache-busting, sample-image proxy |
 | `test/` | Node + headless-Chromium harnesses that run the **same** `detector.js` |
