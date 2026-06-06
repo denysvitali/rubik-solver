@@ -125,7 +125,11 @@
       h *= 60; if (h < 0) h += 360;
     }
     const s = mx === 0 ? 0 : d / mx, v = mx / 255;
-    if (s < 0.22 && v > 0.5) return "W";
+    // White: either low saturation, OR all channels bright (a blue/warm-tinted
+    // white sticker reads ~[187,216,242] → s≈0.23, just past the low-sat cutoff,
+    // and its hue lands in the blue bin; the bright-floor guard (mn>170) keeps
+    // it White.
+    if ((s < 0.22 || mn > 170) && v > 0.5) return "W";
     if (v < 0.12) return "W";
     if (h < 16 || h >= 330) return "R";
     if (h < 30) return "O";   // orange ~15-30° (covers (255,130,30) h≈27)
@@ -444,7 +448,10 @@
       ax2x = -ax1y; ax2y = ax1x;
     }
 
-    // 3. Project stickers onto both axes
+    // 3. Project stickers onto both axes (orthogonal dot-product). This is the
+    //    original, validated projection for a full 9-sticker face; the partial
+    //    -face branch below switches to an exact oblique decomposition where it
+    //    matters (a strongly foreshortened face).
     const proj = stickers.map((s) => ({
       sticker: s,
       u: (s.cx - mx) * ax1x + (s.cy - my) * ax1y,
@@ -480,51 +487,57 @@
       centers.sort((a, b) => a - b);
       return { centers, assign };
     }
-    function cluster3(items, key) {
-      const values = items.map((it) => it[key]);
-      const km = kmeans1D(values, 3);
-      if (!km) return null;
-      // Reconstruct the 3 groups in the same order as the input items.
-      // The kmeans indices are over the SORTED values; map back via the
-      // original index on each item so we can return the items themselves.
-      const sortedIdx = items.map((_, i) => i).sort((a, b) => items[a][key] - items[b][key]);
-      const groups = Array.from({ length: 3 }, () => []);
-      for (let s = 0; s < sortedIdx.length; s++) {
-        groups[km.assign[s]].push(items[sortedIdx[s]]);
+    // Assign stickers to the 3 row / 3 column lines, then take the per-line
+    // means as the grid centres.
+    //   • Full 9-sticker face: sort by v and group-by-3, then sort each row by
+    //     u. Exact and robust to the perspective shear that makes naive 1D
+    //     k-means converge to a wrong local minimum (rows overlap in v on a
+    //     tilted face, so the 9 v-projections aren't 3 cleanly-spaced clusters).
+    //   • Partial face (5–8 stickers, e.g. one sticker occluded/undetected):
+    //     1D k-means into 3 lines per axis, tolerant to the missing cell.
+    let colCenters, rowCenters;
+    if (n >= 9) {
+      const rowGroups = (() => {
+        const sorted = [...proj].sort((a, b) => a.v - b.v);
+        return [sorted.slice(0, 3), sorted.slice(3, 6), sorted.slice(6, 9)];
+      })();
+      if (!rowGroups.every((g) => g.length === 3)) return null;
+      const colGroups = [[], [], []];
+      for (const row of rowGroups) {
+        const sortedRow = [...row].sort((a, b) => a.u - b.u);
+        for (let c = 0; c < 3; c++) colGroups[c].push(sortedRow[c]);
       }
-      return groups;
+      if (!colGroups.every((g) => g.length === 3)) return null;
+      colCenters = colGroups.map((g) => g.reduce((s, p) => s + p.u, 0) / g.length);
+      rowCenters = rowGroups.map((g) => g.reduce((s, p) => s + p.v, 0) / g.length);
+    } else {
+      // Partial face (5–8 stickers, e.g. one sticker occluded/undetected).
+      // Decompose offsets in the OBLIQUE (ax1, ax2) basis: the two edge
+      // directions are not perpendicular under perspective (a top face's edges
+      // project ~46° off square), so an orthogonal dot-product smears the rows
+      // together; solving [ax1 ax2]·[u;v]=Δ recovers exact grid coordinates
+      // (and is the consistent inverse of the corner reconstruction below).
+      // Then 1D k-means finds the 3 occupied lines on each axis — robust to the
+      // foreshortened row pitch differing from the sticker size. Every line
+      // must be populated so we never invent a missing row/column.
+      const adet = ax1x * ax2y - ax1y * ax2x;
+      if (Math.abs(adet) < 1e-6) return null; // axes collinear — degenerate
+      const obl = stickers.map((s) => ({
+        u: ((s.cx - mx) * ax2y - (s.cy - my) * ax2x) / adet,
+        v: (ax1x * (s.cy - my) - ax1y * (s.cx - mx)) / adet,
+      }));
+      const fitAxis = (key) => {
+        const km = kmeans1D(obl.map((p) => p[key]), 3);
+        if (!km) return null;
+        const cnt = [0, 0, 0];
+        for (const a of km.assign) cnt[a]++;
+        if (cnt.some((c) => c === 0)) return null;
+        return km.centers; // sorted ascending
+      };
+      colCenters = fitAxis("u");
+      rowCenters = fitAxis("v");
+      if (!colCenters || !rowCenters) return null;
     }
-
-    // The previous 1D k-means on u and v projections separately found wrong
-    // centres for a tilted face: the 9 v-projections don't form 3 evenly-
-    // spaced clusters (rows overlap in v when the face is sheared by
-    // perspective), so k-means converges to a local minimum that's even
-    // further from the true row/col means. Replacing with a deterministic
-    // sort-and-group:
-    //  - rows: sort the 9 stickers by v (perpendicular to the row
-    //    direction), group by 3. The 3 row means are then the v-means
-    //    of each group — exact, no clustering ambiguity.
-    //  - cols: for each row, sort its 3 stickers by u to assign column
-    //    index; the col means are then the u-means across all 3 rows.
-    const rowGroups = (() => {
-      const sorted = [...proj].sort((a, b) => a.v - b.v);
-      return [sorted.slice(0, 3), sorted.slice(3, 6), sorted.slice(6, 9)];
-    })();
-    if (!rowGroups.every((g) => g.length === 3)) return null;
-    const colGroups = [[], [], []];
-    for (const row of rowGroups) {
-      const sortedRow = [...row].sort((a, b) => a.u - b.u);
-      for (let c = 0; c < 3; c++) colGroups[c].push(sortedRow[c]);
-    }
-    if (!colGroups.every((g) => g.length === 3)) return null;
-
-    // 5. Validate: every group should be non-empty (always true here, but
-    // keep the guard so a refactor doesn't silently produce a null group).
-    if (!colGroups.every((g) => g.length) || !rowGroups.every((g) => g.length)) return null;
-
-    // 6. Compute group centers
-    const colCenters = colGroups.map((g) => g.reduce((s, p) => s + p.u, 0) / g.length);
-    const rowCenters = rowGroups.map((g) => g.reduce((s, p) => s + p.v, 0) / g.length);
 
     if (colCenters.some((c) => !Number.isFinite(c)) || rowCenters.some((c) => !Number.isFinite(c))) return null;
 
@@ -560,6 +573,35 @@
     }));
 
     return { corners, colCenters, rowCenters, ax1x, ax1y, ax2x, ax2y, mx, my };
+  }
+
+  // Group stickers into faces by EDGE ORIENTATION. Every sticker on one cube
+  // face is a parallelogram whose two edge directions are shared across the
+  // whole face (they're the 2D projection of that face's grid axes); an
+  // adjacent face, tilted in 3D, projects a DIFFERENT pair of directions. So
+  // two stickers belong to the same face iff their unordered edge-angle pairs
+  // match (within `tolDeg`, mod 180°). This separates the spatially-touching
+  // faces of an angled cube that proximity clustering merges into one blob —
+  // and needs only ≥3 co-oriented stickers to anchor a face. Returns groups
+  // (arrays of the input stickers), largest first.
+  function groupByOrientation(stickers, tolDeg) {
+    const tol = tolDeg == null ? 16 : tolDeg;
+    const ang = (e) => (((Math.atan2(e.y, e.x) * 180) / Math.PI) % 180 + 180) % 180;
+    const cd = (a, b) => { const d = Math.abs(a - b); return Math.min(d, 180 - d); };
+    const items = stickers.filter((s) => s.e1 && s.e2).map((s) => ({ s, a1: ang(s.e1), a2: ang(s.e2) }));
+    const n = items.length;
+    const par = items.map((_, i) => i);
+    const find = (x) => { while (par[x] !== x) { par[x] = par[par[x]]; x = par[x]; } return x; };
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        const A = items[i], B = items[j];
+        if ((cd(A.a1, B.a1) < tol && cd(A.a2, B.a2) < tol) ||
+            (cd(A.a1, B.a2) < tol && cd(A.a2, B.a1) < tol)) par[find(i)] = find(j);
+      }
+    }
+    const g = {};
+    items.forEach((it, i) => { const r = find(i); (g[r] = g[r] || []).push(it.s); });
+    return Object.values(g).sort((a, b) => b.length - a.length);
   }
 
   // Split a cluster that merges two adjacent faces. Two visible faces of an
@@ -685,13 +727,25 @@
     return out;
   }
 
-  // Order 4 arbitrary points into [TL, TR, BR, BL] (standard sum/diff trick).
+  // Order 4 arbitrary points into [TL, TR, BR, BL].
+  //
+  // The classic sum/diff trick (TL=min(x+y), BR=max(x+y), TR=max(x−y),
+  // BL=min(x−y)) DEGENERATES for a quad rotated ~45°: a diamond's left vertex
+  // is simultaneously the min-sum AND min-diff point, so two corners collapse
+  // to it and the perspective warp becomes a sliver. The faces of a tilted cube
+  // routinely project as diamonds, so order by angle around the centroid (a
+  // consistent clockwise winding for any rotation) and start the ring at the
+  // top-left-most vertex. Reduces to the same result as the sum/diff trick for
+  // an axis-aligned quad.
   function orderCorners(pts) {
-    const bySum = [...pts].sort((a, b) => (a.x + a.y) - (b.x + b.y));
-    const tl = bySum[0], br = bySum[3];
-    const byDiff = [...pts].sort((a, b) => (a.x - a.y) - (b.x - b.y));
-    const bl = byDiff[0], tr = byDiff[3];
-    return [tl, tr, br, bl];
+    let cx = 0, cy = 0;
+    for (const p of pts) { cx += p.x; cy += p.y; }
+    cx /= pts.length; cy /= pts.length;
+    // ascending atan2 in image coords (y down) walks the ring clockwise
+    const ring = [...pts].sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
+    let s = 0, best = Infinity;
+    ring.forEach((p, i) => { if (p.x + p.y < best) { best = p.x + p.y; s = i; } });
+    return [ring[s], ring[(s + 1) % 4], ring[(s + 2) % 4], ring[(s + 3) % 4]];
   }
 
   // Sample a face from 4 user-clicked corners (full-res coords) by warping the
@@ -1024,81 +1078,39 @@
       return true;
     };
 
-    const clusters = clusterStickers(stickers);
-    // Walk clusters bottom-up: a >9-sticker cluster is multiple faces merged
-    // (a face has 9). Always recurse — the first fitGrid on a 14+ cluster
-    // can succeed by accident (one PCA axis + the off-axis stickers line up
-    // on the same projection) and "use up" the whole cluster as one face.
-    // Forcing a split first means each face comes from a 5–9 sub-cluster
-    // where the grid fit is actually meaningful. The depth/budget guards
-    // prevent runaway recursion if a split fails to shrink the cluster.
-    const tryEmit = (sub, depth) => {
-      if (sub.length < 5) return;
-      if (depth > 3) {
-        // Hit recursion budget — give up on splitting, just try a grid fit.
-        const g = fitGrid(sub);
-        if (g) emit(g, sub);
-        return;
-      }
-      if (sub.length > 9) {
-        const parts = splitByOrientation(sub);
-        // splitByOrientation may return the input unchanged if it can't find
-        // a real seam; treat that as a leaf and grid-fit directly.
-        if (parts.length === 1 || parts[0] === sub) {
-          const g = fitGrid(sub);
-          if (g) emit(g, sub);
-        } else {
-          for (const s2 of parts) tryEmit(s2, depth + 1);
-        }
-        return;
-      }
+    // Split the stickers into faces by EDGE ORIENTATION first — each visible
+    // cube face has its own pair of edge directions, so this separates the
+    // spatially-touching faces of an angled cube that proximity clustering
+    // merges into one blob (the old kmeans/seam-split approach was fragile
+    // here). Then split each orientation group by PROXIMITY so same-oriented
+    // background rectangles sitting apart from the cube (a poster grid, tiles)
+    // don't get fitted as a face. Each resulting 5–9 sticker subcluster is one
+    // face → fit its 3×3 grid; emit() rejects non-cube clusters (<3 colours)
+    // and a centroid-dedup guard prevents the same face being emitted twice.
+    const emitted = [];
+    const centroidOf = (c) => ({ x: (c[0].x + c[1].x + c[2].x + c[3].x) / 4, y: (c[0].y + c[1].y + c[2].y + c[3].y) / 4 });
+    const tryFace = (sub) => {
+      if (sub.length < 5 || sub.length > 9) return;
       const grid = fitGrid(sub);
-      if (grid) emit(grid, sub);
+      if (!grid) return;
+      const ctr = centroidOf(grid.corners);
+      // Dedup only the SAME face fitted twice (near-identical centroids). The
+      // three faces of an angled cube share the cube centre, so their face
+      // centroids sit only ~2 sticker-widths apart — keying the threshold off
+      // one sticker pitch (not the face diagonal) keeps them distinct.
+      const pitch = [...sub].map((s) => s.side).sort((a, b) => a - b)[sub.length >> 1] || 20;
+      if (emitted.some((e) => Math.hypot(e.x - ctr.x, e.y - ctr.y) < pitch)) return;
+      if (emit(grid, sub)) emitted.push(ctr);
     };
-    for (const cluster of clusters) {
-      if (cluster.length < 5) continue;
-      if (cluster.length > 9) {
-        // Prefer a single 2D k-means with K=3 when the cluster is big enough
-        // to plausibly contain 3 faces. The chained 2-means approach
-        // (split, split the bigger half) can lock in on the wrong seam
-        // first; 3-means on positions finds the 3 face centroids in one
-        // pass and handles 3-face angled cubes robustly. Fall back to the
-        // recursive 2-means split if 3-means produces an ill-formed split.
-        const sub = tryClusterSplit(cluster);
-        if (sub) {
-          for (const s of sub) tryEmit(s, 1);
-        } else {
-          const parts = splitByOrientation(cluster);
-          if (parts.length === 1 || parts[0] === cluster) {
-            const g = fitGrid(cluster);
-            if (g) emit(g, cluster);
-          } else {
-            for (const s2 of parts) tryEmit(s2, 1);
-          }
-        }
-      } else {
-        const grid = fitGrid(cluster);
-        if (grid) emit(grid, cluster);
+    for (const og of groupByOrientation(stickers)) {
+      if (og.length < 5) continue;
+      const subs = og.length > 9 ? clusterStickers(og) : [og];
+      for (const sub of subs) {
+        if (sub.length <= 9) tryFace(sub);
+        else for (const s2 of clusterStickers(sub)) tryFace(s2.slice(0, 9)); // two coplanar faces share orientation — keep densest 9
       }
     }
 
-    // Try to split a big cluster into 3 faces via 2D k-means. Only return a
-    // split if all resulting groups look like a cube face (>=5 stickers and
-    // a successful grid fit, AND the split is reasonably balanced — a
-    // 11+7+8 split leaks a couple of stickers across the seam, while a
-    // clean 9+9+8 split has each face at its own centroid).
-    function tryClusterSplit(sub) {
-      if (sub.length < 14) return null; // 3 faces × ~5 each is the minimum
-      const groups = kmeans2D(sub, 3, 30);
-      if (groups.length !== 3) return null;
-      if (!groups.every((g) => g.length >= 5 && fitGrid(g))) return null;
-      const lens = groups.map((g) => g.length).sort((a, b) => a - b);
-      // Reject if a group is more than 4 stickers larger than the smallest.
-      // A balanced 3-face cube ≈ 9+9+8 (one sticker missing); an unbalanced
-      // 11+7+8 indicates a centroid wandered across a face boundary.
-      if (lens[2] - lens[0] > 4) return null;
-      return groups;
-    }
     work.delete();
     return results;
   }
@@ -1154,6 +1166,17 @@
 
   function detectFacesGeometric(cv, src, opts) {
     const debug = opts && opts.debug;
+
+    // Sticker-orientation path first. When the cube's stickers are individually
+    // detectable (bordered/matte cubes, decent lighting), grouping them by edge
+    // orientation into faces and fitting each 3×3 grid is far more accurate
+    // than the top-down silhouette fit — it reads the actual sticker lattice
+    // instead of inferring it from 6 silhouette corners. Only fall through to
+    // the silhouette path (below) when too few faces come back, which is the
+    // glossy / stickerless / borderless case the silhouette path exists for.
+    const sticker = detectFaces(cv, src, {});
+    if (sticker.length >= 2) return sticker;
+
     const W0 = src.cols, H0 = src.rows;
     const scale = GEO_WORK / W0;
     const W = Math.max(1, Math.round(W0 * scale)), H = Math.max(1, Math.round(H0 * scale));
@@ -1430,5 +1453,5 @@
     return result;
   }
 
-  return { detectCube, detectFaces, detectFacesGeometric, facesFromWireframe, readFaceQuad, sampleQuad, orderCorners, classifyColor, sampleGrid, cellColor, findStickerSquares, clusterStickers, findColorAnchors, pickCubeCluster, squaredBBox, fitGrid, splitByOrientation, kmeans2D, COLORS, WORK_WIDTH };
+  return { detectCube, detectFaces, detectFacesGeometric, facesFromWireframe, readFaceQuad, sampleQuad, orderCorners, classifyColor, sampleGrid, cellColor, findStickerSquares, clusterStickers, findColorAnchors, pickCubeCluster, squaredBBox, fitGrid, splitByOrientation, groupByOrientation, kmeans2D, COLORS, WORK_WIDTH };
 });
