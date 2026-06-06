@@ -970,6 +970,8 @@
       };
     }
 
+    const distinctVivid = (cl) => new Set(cl.map(codeOf).filter((c) => c !== "W")).size;
+
     // If not enough stickers from the full image, try anchor-guided zoom:
     // find the cube region via green/blue anchors, crop the full-res image
     // to that region (with padding), and re-detect stickers at higher
@@ -1023,18 +1025,25 @@
 
     if (gridResult) {
       const face = sampleQuad(cv, src, gridResult.corners);
-      const clusterSrc = gridResult.cluster.map((a) => ({
-        rect: { x: a.rect.x, y: a.rect.y, width: a.rect.width, height: a.rect.height },
-      }));
-      face.region = null;
-      face.stickerCount = gridResult.stickerCount;
-      work.delete();
-      return {
-        face, region: null, confident: true, method: "grid",
-        cluster: clusterSrc, stickerCount: gridResult.stickerCount,
-        squareCount: squares.length, workSize: { w: W, h: H },
-        corners: gridResult.corners,
-      };
+      const codes = new Set(face.cells.map((cell) => cell.code));
+      const badWhiteWarp =
+        codes.size === 1 &&
+        codes.has("W") &&
+        (distinctVivid(gridResult.cluster) >= 2 || gridResult.stickerCount < 9);
+      if (!badWhiteWarp) {
+        const clusterSrc = gridResult.cluster.map((a) => ({
+          rect: { x: a.rect.x, y: a.rect.y, width: a.rect.width, height: a.rect.height },
+        }));
+        face.region = null;
+        face.stickerCount = gridResult.stickerCount;
+        work.delete();
+        return {
+          face, region: null, confident: true, method: "grid",
+          cluster: clusterSrc, stickerCount: gridResult.stickerCount,
+          squareCount: squares.length, workSize: { w: W, h: H },
+          corners: gridResult.corners,
+        };
+      }
     }
 
     // Method 2 — sticker proximity clustering (original Method A).
@@ -1048,7 +1057,6 @@
     // through to Method 3 (green/blue anchors) which can recover the cube
     // from individual vivid stickers even if they don't cluster.
     const sqClusters = clusterStickers(squares);
-    const distinctVivid = (cl) => new Set(cl.map(codeOf).filter((c) => c !== "W")).size;
     const isStickerClusterCandidate = (cl) => distinctVivid(cl) >= 2 || (cl.length >= 5 && distinctVivid(cl) >= 1);
     const sqRanked = sqClusters
       .filter(isStickerClusterCandidate)

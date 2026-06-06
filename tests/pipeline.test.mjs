@@ -10,6 +10,12 @@ const require = createRequire(import.meta.url);
 
 const CASES = [
   {
+    name: "flat sticker sample",
+    cache: "../sample.jpg",
+    format: "jpg",
+    expected: "GRYGBOGYB",
+  },
+  {
     name: "6071137",
     url: "https://s3.amazonaws.com/emuncloud-staticassets/productImages/sm075/hires/6071137.jpg",
     cache: "fixtures/6071137.jpg",
@@ -65,8 +71,8 @@ async function fetchWithTimeout(url, ms = 15000) {
 
 async function loadImage(c) {
   const cacheFile = new URL("./" + c.cache, import.meta.url);
-  fs.mkdirSync(new URL("./fixtures", import.meta.url), { recursive: true });
-  if (!fs.existsSync(cacheFile)) {
+  if (c.url) fs.mkdirSync(new URL("./fixtures", import.meta.url), { recursive: true });
+  if (c.url && !fs.existsSync(cacheFile)) {
     fs.writeFileSync(cacheFile, await fetchWithTimeout(c.url));
   }
   const raw = fs.readFileSync(cacheFile);
@@ -110,6 +116,10 @@ if (cv) {
       for (const face of faces) {
         assert.equal(face.cells.length, 9);
         for (const cell of face.cells) assert.match(cell.code, /^[WYROGB]$/);
+      }
+      if (c.expected) {
+        assert.equal(faces.length, 1);
+        assert.equal(faces[0].cells.map((cell) => cell.code).join(""), c.expected);
       }
     });
   }

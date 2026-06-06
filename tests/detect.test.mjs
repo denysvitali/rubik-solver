@@ -64,4 +64,10 @@ if (!fs.existsSync(path)) {
     assert.equal(typeof result.squareCount, "number");
     assert.ok(result.squareCount >= 0);
   });
+
+  if (FILE === "sample.jpg") {
+    test("detect: flat sticker cube matches pinned one-face ground truth", () => {
+      assert.equal(result.face.cells.map((c) => c.code).join(""), "GRYGBOGYB");
+    });
+  }
 }

@@ -16,6 +16,7 @@ import puppeteer from "puppeteer";
 
 const URL = process.env.URL || "http://localhost:8085/";
 const IMG = process.env.IMG || "sample.jpg";
+const FLAT_STICKER_GROUND_TRUTH = "GRYGBOGYB";
 
 const browser = await puppeteer.launch({
   headless: "new",
@@ -105,11 +106,8 @@ test("harness: pipeline diagnostics are rendered", () => {
   assert.ok(result.debugSteps.some((step) => /accepted/i.test(step)), `no accepted pipeline step: ${result.debugSteps.join(" | ")}`);
 });
 
-// Optional golden check (skip in CI by default — exact grids are fragile
-// to small OpenCV.js version changes; structural assertions above are the
-// real safety net).
-test("harness: golden grid (sample.jpg ≈ all white stickers)", { skip: !process.env.GOLDEN }, () => {
-  const cells = result.cards[0].cells.map((c) => c.code);
-  const allWhite = cells.every((c) => c === "W");
-  assert.ok(allWhite, `expected all-W; got: ${cells.join(" ")}`);
+test("harness: flat sticker cube matches pinned one-face ground truth", { skip: IMG !== "sample.jpg" }, () => {
+  assert.equal(result.cards.length, 1, `expected one visible side; got ${result.cards.length}`);
+  const cells = result.cards[0].cells.map((c) => c.code).join("");
+  assert.equal(cells, FLAT_STICKER_GROUND_TRUTH);
 });
