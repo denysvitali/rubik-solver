@@ -1,10 +1,12 @@
-import fs from "node:fs"; import jpeg from "jpeg-js"; import { createRequire } from "node:module";
+import fs from "node:fs"; import jpeg from "jpeg-js"; import { PNG } from "pngjs"; import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const ort = require("onnxruntime-node");
 const cv = require("../opencv.js"); await new Promise(r=>{cv.onRuntimeInitialized=r;});
 const RD = require("../detector.js");
 const FILE=process.argv[2]||"userimg.jpg";
-const img=jpeg.decode(fs.readFileSync(new URL("../"+FILE,import.meta.url)),{useTArray:true});
+const _buf=fs.readFileSync(new URL("../"+FILE,import.meta.url));
+const _lower=FILE.toLowerCase();
+const img=_lower.endsWith(".png")?PNG.sync.read(_buf):jpeg.decode(_buf,{useTArray:true});
 const W=img.width,H=img.height;
 const src=cv.matFromImageData({data:img.data,width:W,height:H});
 // u2net mask

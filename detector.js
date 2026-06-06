@@ -780,10 +780,29 @@
       return Object.values(buckets).filter((g) => g.length >= 5)
         .sort((a, b) => b.length - a.length);
     };
+    // A real Rubik's cube face has at least 3 distinct colors among its
+    // 9 cells; paper algorithm diagrams / desk reflections don't. Reject
+    // a fit whose warped cell-colors are all the same — otherwise the
+    // first paper grid (typically the largest cluster) hijacks the result
+    // and we never find the actual cube.
+    const faceColorsCubeLike = (corners) => {
+      const codes = new Set();
+      for (let gy = 0; gy < 3; gy++) {
+        for (let gx = 0; gx < 3; gx++) {
+          const u = (gx + 0.5) / 3, v = (gy + 0.5) / 3;
+          const cu = corners[0].x + (corners[1].x - corners[0].x) * u + (corners[3].x - corners[0].x) * v;
+          const cv = corners[0].y + (corners[1].y - corners[0].y) * u + (corners[3].y - corners[0].y) * v;
+          const x = Math.max(0, Math.min(W - 1, Math.round(cu)));
+          const y = Math.max(0, Math.min(H - 1, Math.round(cv)));
+          const i = (y * W + x) * 4;
+          codes.add(classifyColor(wd[i], wd[i + 1], wd[i + 2]));
+        }
+      }
+      return codes.size >= 3;
+    };
     const tryFit = (stk) => {
-      const g = fitGrid(stk);
       const grid = fitGrid(stk);
-      return grid && cornersInBounds(grid) ? grid : null;
+      return grid && cornersInBounds(grid) && faceColorsCubeLike(grid.corners) ? grid : null;
     };
     const trySplit = (cluster, depth) => {
       if (cluster.length < 5) return null;
@@ -908,9 +927,21 @@
       };
     }
 
-    // Method 2 — sticker proximity clustering (original Method A)
+    // Method 2 — sticker proximity clustering (original Method A).
+    // Score clusters by VIVID-COLOUR DIVERSITY: a paper algorithm diagram
+    // clusters 17 mostly-white squares with maybe one green arrow
+    // (distinctVivid≤1); the real cube cluster — even when occluded —
+    // shows 2+ distinct sticker colours. Require distinctVivid ≥ 2 to
+    // qualify; without that, paper edges with one accent colour win on
+    // raw size. When no cluster qualifies, we fall through to Method 3
+    // (green/blue anchors) which can recover the cube from individual
+    // vivid stickers even if they don't cluster.
     const sqClusters = clusterStickers(squares);
-    const sqBest = sqClusters[0] || [];
+    const distinctVivid = (cl) => new Set(cl.map(codeOf).filter((c) => c !== "W")).size;
+    const sqRanked = sqClusters
+      .filter((c) => distinctVivid(c) >= 2)
+      .sort((a, b) => (distinctVivid(b) - distinctVivid(a)) || (b.length - a.length));
+    const sqBest = sqRanked[0] || [];
     let method, regionW, confident, overlayBoxes;
     if (sqBest.length >= 5) {
       regionW = squaredBBox(sqBest, W, H, T.pad.cluster);
@@ -1244,9 +1275,16 @@
     const hd = hsv.data;
     const darkAlong = (a, b) => { let s = 0, n = 0; const st = Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y)) | 0; for (let i = 0; i <= st; i++) { const t = st ? i / st : 0, x = (a.x + (b.x - a.x) * t) | 0, y = (a.y + (b.y - a.y) * t) | 0; if (x < 0 || y < 0 || x >= W || y >= H) continue; s += hd[(y * W + x) * 3 + 2]; n++; } return n ? s / n : 255; };
 
+    // A real cube face yields ≥3 distinct cell colours; a fake silhouette
+    // (hand+wall+paper, single-tone background, etc.) reads as mostly the
+    // same colour after warp. Reject and let the caller fall back.
+    const isCubeLike = (face) => face && new Set(face.cells.map((c) => c.code)).size >= 3;
+
     if (N === 4) {
       const quad = toFull(V);
-      out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 9, method: "geometric-1face", cluster: [], silhouette });
+      const face = readFaceQuad(cv, src, quad);
+      if (!isCubeLike(face)) return done();
+      out.push({ face, corners: quad, stickerCount: 9, method: "geometric-1face", cluster: [], silhouette });
       return done();
     }
 
@@ -1298,11 +1336,28 @@
     });
     const sideStart = altScore(0) >= altScore(1) ? 0 : 1;
     const wireframe = { near: nearFull, ring: ringFull, sideStart };
+    const builtFaces = [];
     for (let k = 0; k < 3; k++) {
       const a = (sideStart + 2 * k) % 6, b = (a + 1) % 6, c = (a + 2) % 6;
       const quad = [nearFull, ringFull[a], ringFull[b], ringFull[c]];
-      out.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 9, method: P ? "geometric-pnp" : "geometric-3face", cluster: [], wireframe, silhouette });
+      builtFaces.push({ face: readFaceQuad(cv, src, quad), corners: quad, stickerCount: 9, method: P ? "geometric-pnp" : "geometric-3face", cluster: [], wireframe, silhouette });
     }
+    // Reject the entire decomposition if it looks like the silhouette
+    // engulfed clutter (hand + wall + paper) instead of a cube:
+    //   1) at least one face must be "cube-like" (≥3 distinct colours), AND
+    //   2) no single colour may dominate >70 % of the 27 cells across all
+    //      faces — a real cube spans 6 sticker colours so the most common
+    //      one rarely exceeds ~50 %, while a bogus silhouette over skin /
+    //      brick wall collapses to one dominant tone (orange).
+    // Falling back to detectCube via [] gives a much better answer in the
+    // hand-held-with-cluttered-background case.
+    const allCells = builtFaces.flatMap((f) => f.face && f.face.cells || []);
+    const counts = {};
+    for (const c of allCells) counts[c.code] = (counts[c.code] || 0) + 1;
+    const maxFreq = allCells.length ? Math.max(...Object.values(counts)) / allCells.length : 1;
+    const anyCubeLike = builtFaces.some((f) => isCubeLike(f.face));
+    if (!anyCubeLike || maxFreq > 0.70) return done();
+    out.push(...builtFaces);
     return done();
   }
 
