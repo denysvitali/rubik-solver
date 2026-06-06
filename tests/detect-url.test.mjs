@@ -89,6 +89,16 @@ const CASES = [
     // app's primary path) must return it.
     stickerTopFace: "BGOBGBBRO",
   },
+  {
+    name: "wikipedia rubik's cube",
+    url: "https://upload.wikimedia.org/wikipedia/commons/e/e2/Rubik%27s_Cube.jpg",
+    cache: "fixtures/wikipedia-rubiks-cube.jpg",
+    format: "jpg",
+    // 3813x2213 scrambled cube photo from Wikimedia Commons. This replaces
+    // the local-only test/_wp_probe.mjs diagnostic with a clean-checkout
+    // regression case that fetches/caches the image like the other URL tests.
+    stickerFaceCount: 2,
+  },
 ];
 
 // opencv.js is gitignored; bail out early so the test file still loads.
@@ -267,6 +277,33 @@ if (!cv) {
           `expected top face ${c.stickerTopFace} among detected faces ${JSON.stringify(got)} — ` +
             `background squares are likely polluting the orientation groups (cluster by proximity before splitting by orientation).`,
         );
+      });
+    } else if (c.stickerFaceCount) {
+      const img3 = await loadImage(cacheFile, c.format);
+      const src3 = cv.matFromImageData({ data: img3.data, width: img3.width, height: img3.height });
+      let stickerFaces;
+      try {
+        stickerFaces = RD.detectFaces(cv, src3);
+      } finally {
+        src3.delete();
+      }
+      test(`${tag}: 3x3 grid shows a real scrambled face (>=3 distinct colours)`, () => {
+        const codes = result.face.cells.map((cell) => cell.code);
+        assert.ok(
+          new Set(codes).size >= 3,
+          `expected >=3 distinct colours on a scrambled face; got grid ${codes.join(" ")}`,
+        );
+      });
+      test(`${tag}: detectFaces returns ${c.stickerFaceCount} face candidates`, () => {
+        assert.equal(stickerFaces.length, c.stickerFaceCount);
+      });
+      test(`${tag}: every detected face has 9 valid cells`, () => {
+        for (const f of stickerFaces) {
+          assert.equal(f.face.cells.length, 9);
+          for (const cell of f.face.cells) {
+            assert.match(cell.code, /^[WYROGB]$/, `bad code: ${cell.code}`);
+          }
+        }
       });
     } else {
       // For SCRAMBLED cubes without a pinned 3-face grid: just confirm

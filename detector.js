@@ -926,6 +926,50 @@
 
     let gridResult = tryGridFit(squares, scale);
 
+    // Some product-style solved cubes expose only four detectable stickers on
+    // one face; infer that sparse same-colour cluster only when the sampled
+    // region is already overwhelmingly the same vivid colour.
+    const trySparseSolvedCluster = () => {
+      if (squares.length > 8) return null;
+      for (const cluster of clusterStickers(squares)) {
+        if (cluster.length < 4) continue;
+        const vivid = cluster.map(codeOf).filter((c) => c !== "W");
+        const clusterCodes = new Set(vivid);
+        if (vivid.length < 4 || clusterCodes.size !== 1) continue;
+        const solvedCode = vivid[0];
+        const regionW = squaredBBox(cluster, W, H, T.pad.cluster);
+        const face = sampleGrid(work, regionW, true);
+        const codes = face.cells.map((cell) => cell.code);
+        const solvedCount = codes.filter((c) => c === solvedCode).length;
+        const outliers = codes.filter((c) => c !== solvedCode);
+        if (solvedCount < 7 || outliers.some((c) => c !== "W")) continue;
+        for (const cell of face.cells) cell.code = solvedCode;
+        return { face, regionW, cluster, stickerCount: cluster.length };
+      }
+      return null;
+    };
+
+    const sparseSolved = gridResult ? null : trySparseSolvedCluster();
+    if (sparseSolved) {
+      const region = {
+        x: sparseSolved.regionW.x * inv,
+        y: sparseSolved.regionW.y * inv,
+        w: sparseSolved.regionW.w * inv,
+        h: sparseSolved.regionW.h * inv,
+      };
+      const clusterSrc = sparseSolved.cluster.map((a) => ({
+        rect: { x: a.rect.x * inv, y: a.rect.y * inv, width: a.rect.width * inv, height: a.rect.height * inv },
+      }));
+      sparseSolved.face.region = region;
+      sparseSolved.face.stickerCount = sparseSolved.stickerCount;
+      work.delete();
+      return {
+        face: sparseSolved.face, region, confident: true, method: "stickers-solved",
+        cluster: clusterSrc, stickerCount: sparseSolved.stickerCount,
+        squareCount: squares.length, workSize: { w: W, h: H },
+      };
+    }
+
     // If not enough stickers from the full image, try anchor-guided zoom:
     // find the cube region via green/blue anchors, crop the full-res image
     // to that region (with padding), and re-detect stickers at higher
@@ -998,14 +1042,16 @@
     // clusters 17 mostly-white squares with maybe one green arrow
     // (distinctVivid≤1); the real cube cluster — even when occluded —
     // shows 2+ distinct sticker colours. Require distinctVivid ≥ 2 to
-    // qualify; without that, paper edges with one accent colour win on
-    // raw size. When no cluster qualifies, we fall through to Method 3
-    // (green/blue anchors) which can recover the cube from individual
-    // vivid stickers even if they don't cluster.
+    // qualify for scrambled faces; solved faces can legitimately produce
+    // one vivid colour, so keep 5+ sticker clusters with at least one vivid
+    // colour as lower-ranked candidates. When no cluster qualifies, we fall
+    // through to Method 3 (green/blue anchors) which can recover the cube
+    // from individual vivid stickers even if they don't cluster.
     const sqClusters = clusterStickers(squares);
     const distinctVivid = (cl) => new Set(cl.map(codeOf).filter((c) => c !== "W")).size;
+    const isStickerClusterCandidate = (cl) => distinctVivid(cl) >= 2 || (cl.length >= 5 && distinctVivid(cl) >= 1);
     const sqRanked = sqClusters
-      .filter((c) => distinctVivid(c) >= 2)
+      .filter(isStickerClusterCandidate)
       .sort((a, b) => (distinctVivid(b) - distinctVivid(a)) || (b.length - a.length));
     const sqBest = sqRanked[0] || [];
     let method, regionW, confident, overlayBoxes;
@@ -1016,7 +1062,7 @@
       // Method 3 — green/blue anchors
       const anchors = findColorAnchors(cv, work, imgArea);
       const cluster = pickCubeCluster(anchors);
-      if (cluster && cluster.length) {
+      if (cluster && cluster.length >= 2) {
         regionW = squaredBBox(cluster, W, H, 0.10);
         confident = true; method = "green/blue"; overlayBoxes = cluster;
       } else {
