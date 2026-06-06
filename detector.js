@@ -1087,15 +1087,21 @@
       return true;
     };
 
-    // Split the stickers into faces by EDGE ORIENTATION first — each visible
-    // cube face has its own pair of edge directions, so this separates the
-    // spatially-touching faces of an angled cube that proximity clustering
-    // merges into one blob (the old kmeans/seam-split approach was fragile
-    // here). Then split each orientation group by PROXIMITY so same-oriented
-    // background rectangles sitting apart from the cube (a poster grid, tiles)
-    // don't get fitted as a face. Each resulting 5–9 sticker subcluster is one
-    // face → fit its 3×3 grid; emit() rejects non-cube clusters (<3 colours)
-    // and a centroid-dedup guard prevents the same face being emitted twice.
+    // Isolate the cube by PROXIMITY first, then split each cluster into faces by
+    // EDGE ORIENTATION. The visible faces of an angled cube touch each other, so
+    // they merge into one dense proximity cluster, while background
+    // false-positives (t-shirt folds, bedsheet creases, tiles, a stray finger
+    // highlight) sit apart and fall into their own tiny clusters. Clustering
+    // FIRST drops that background contamination before the orientation split —
+    // otherwise a stray background square that happens to share a face's
+    // edge-orientation pair gets lumped into that face's group and drags the
+    // grid fit off the cube (the previous orientation-first pass did exactly
+    // this on hand-held shots with a textured background). Within each cluster,
+    // every visible face still has its own edge-direction pair, so
+    // groupByOrientation separates the touching faces; a co-oriented pair of
+    // faces in one group is re-split by proximity and the densest 9 kept. emit()
+    // rejects non-cube groups (<3 colours) and a centroid-dedup guard prevents
+    // the same face being emitted twice.
     const emitted = [];
     const centroidOf = (c) => ({ x: (c[0].x + c[1].x + c[2].x + c[3].x) / 4, y: (c[0].y + c[1].y + c[2].y + c[3].y) / 4 });
     const tryFace = (sub) => {
@@ -1111,12 +1117,12 @@
       if (emitted.some((e) => Math.hypot(e.x - ctr.x, e.y - ctr.y) < pitch)) return;
       if (emit(grid, sub)) emitted.push(ctr);
     };
-    for (const og of groupByOrientation(stickers)) {
-      if (og.length < 5) continue;
-      const subs = og.length > 9 ? clusterStickers(og) : [og];
-      for (const sub of subs) {
-        if (sub.length <= 9) tryFace(sub);
-        else for (const s2 of clusterStickers(sub)) tryFace(s2.slice(0, 9)); // two coplanar faces share orientation — keep densest 9
+    for (const cl of clusterStickers(stickers)) {
+      if (cl.length < 5) continue;
+      for (const og of groupByOrientation(cl)) {
+        if (og.length < 5) continue;
+        if (og.length <= 9) tryFace(og);
+        else for (const s2 of clusterStickers(og)) tryFace(s2.slice(0, 9)); // two coplanar faces share orientation — keep densest 9
       }
     }
 

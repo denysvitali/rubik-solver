@@ -70,6 +70,25 @@ const CASES = [
       ["Y", "B", "W", "W", "R", "G", "O", "G", "Y"], // left
     ],
   },
+  {
+    name: "spin6063964 (stoysnetcdn)",
+    url: "https://stoysnetcdn.com/spin/spin6063964/spin6063964_1.jpg",
+    cache: "fixtures/spin6063964.jpg",
+    format: "jpg",
+    // 1024×1024 lifestyle shot: a child holds a scrambled cube at an angle,
+    // three faces visible against a textured background (grey t-shirt + striped
+    // bedsheet), fingers occluding the front-bottom. Only the TOP face is fully
+    // visible and unoccluded — the left/right faces are heavily foreshortened
+    // with white stickers tucked under the fingers, so their contours can't be
+    // recovered classically (see CLAUDE.md). The previous detector returned two
+    // garbage faces: orientation-grouping ran across the whole image, so
+    // background squares (t-shirt folds, bedsheet creases) polluted the face
+    // groups. Clustering by proximity FIRST isolates the cube blob before the
+    // orientation split, so the fully-visible top face now reads correctly.
+    // `stickerTopFace` is the canonical 3×3 of that top face; detectFaces (the
+    // app's primary path) must return it.
+    stickerTopFace: "BGOBGBBRO",
+  },
 ];
 
 // opencv.js is gitignored; bail out early so the test file still loads.
@@ -225,6 +244,28 @@ if (!cv) {
           `face grids differ. got=${JSON.stringify(got)} want=${JSON.stringify(want)} ` +
             (missing.length ? `missing=${JSON.stringify(missing)} ` : "") +
             (extra.length ? `extra=${JSON.stringify(extra)}` : ""),
+        );
+      });
+    } else if (c.stickerTopFace) {
+      // Angled hand-held cube where only the top face is fully visible: the
+      // app's primary path is detectFaces (sticker-orientation). Assert it
+      // recovers the pinned top-face grid. (detectCube — run above — returns a
+      // single best-effort face and is NOT the path the app uses for this kind
+      // of multi-face shot, so it is not asserted here.)
+      const img3 = await loadImage(cacheFile, c.format);
+      const src3 = cv.matFromImageData({ data: img3.data, width: img3.width, height: img3.height });
+      let stickerFaces;
+      try {
+        stickerFaces = RD.detectFaces(cv, src3);
+      } finally {
+        src3.delete();
+      }
+      test(`${tag}: detectFaces recovers the fully-visible top face`, () => {
+        const got = stickerFaces.map((f) => f.face.cells.map((cell) => cell.code).join(""));
+        assert.ok(
+          got.includes(c.stickerTopFace),
+          `expected top face ${c.stickerTopFace} among detected faces ${JSON.stringify(got)} — ` +
+            `background squares are likely polluting the orientation groups (cluster by proximity before splitting by orientation).`,
         );
       });
     } else {
