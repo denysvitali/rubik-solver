@@ -128,8 +128,11 @@
     if (s < 0.22 && v > 0.5) return "W";
     if (v < 0.12) return "W";
     if (h < 16 || h >= 330) return "R";
-    if (h < 40) return "O";   // orange sits near 15-30°
-    if (h < 70) return "Y";   // yellow ~45-60°
+    if (h < 30) return "O";   // orange ~15-30° (covers (255,130,30) h≈27)
+    if (h < 70) return "Y";   // yellow ~30-70° (includes the warm "school-bus"
+                              // yellow that drifts toward orange in PNG
+                              // encoding; the algorithms.png source of
+                              // truth calls these Y)
     if (h < 175) return "G";
     if (h < 265) return "B";
     return "R";
@@ -1136,6 +1139,7 @@
             const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
             const v = mx, s = mx ? (mx - mn) / mx * 255 : 0;
             if (v > 220 && s < 50) continue; // specular glare → skip
+            if (v < 50) continue;             // black grid line between stickers → skip
             rs.push(r); gs.push(g); bs.push(b);
           }
         }
