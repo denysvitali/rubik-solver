@@ -571,7 +571,7 @@
         (geometric ? `\nsilhouette: ${faces[0].silhouette || "?"}  |  model: ${state.modelStatus}` : "") +
         `\nfaces detected: ${faces.length}` +
         faces.map((f, i) => `\n  face ${i + 1}: ${f.method || "grid"}`).join("") +
-        (state.wireframe ? "\n→ drag the 7 dots to refine the fit" : "");
+        (wfHandles().length ? "\n→ drag the dots to refine the fit" : "");
       hideProgress();
       return;
     }
@@ -651,17 +651,27 @@
     });
   }
 
-  // ---- Editable state.wireframe: drag the 7 handles (near-corner + 6 outer) ----
+  // ---- Editable face corners / wireframe handles ----
   function wfHandles() {
+    if (state.lastFaceDetections.some((face) => Array.isArray(face.corners))) {
+      return state.lastFaceDetections.flatMap((face, faceIndex) =>
+        face.corners.map((p, cornerIndex) => ({
+          id: { faceIndex, cornerIndex },
+          p,
+          color: FACE_COLORS[faceIndex % FACE_COLORS.length],
+        })),
+      );
+    }
     return state.wireframe ? [{ id: "near", p: state.wireframe.near }, ...state.wireframe.ring.map((p, i) => ({ id: i, p }))] : [];
   }
   function drawHandles(ds) {
-    if (!state.wireframe) return;
+    const handles = wfHandles();
+    if (!handles.length) return;
     const ctx = overlay.getContext("2d");
-    for (const h of wfHandles()) {
+    for (const h of handles) {
       const x = h.p.x * ds, y = h.p.y * ds;
       ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
-      ctx.fillStyle = h.id === "near" ? "#ff3b3b" : "#ffffff";
+      ctx.fillStyle = h.color || (h.id === "near" ? "#ff3b3b" : "#ffffff");
       ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = "#000"; ctx.stroke();
     }
   }
@@ -672,16 +682,32 @@
     const ds = overlay.width / state.srcImg.naturalWidth;
     return { x: cx / ds, y: cy / ds, ds };
   }
-  function setHandle(id, p) { if (id === "near") state.wireframe.near = p; else state.wireframe.ring[id] = p; }
+  function setHandle(id, p) {
+    if (id && typeof id === "object") {
+      state.lastFaceDetections[id.faceIndex].corners[id.cornerIndex] = p;
+      return;
+    }
+    if (id === "near") state.wireframe.near = p;
+    else state.wireframe.ring[id] = p;
+  }
   // live redraw during drag (geometry only, no re-sampling)
   function redrawWireframe(ds) {
-    const faces = RubikDetector.facesFromWireframe(null, null, state.wireframe);
+    const faces = state.lastFaceDetections.some((face) => Array.isArray(face.corners))
+      ? state.lastFaceDetections
+      : RubikDetector.facesFromWireframe(null, null, state.wireframe);
     drawMultiOverlay(faces, ds);
     drawHandles(ds);
   }
   function resampleWireframe() {
     const full = fullResMat();
-    const faces = RubikDetector.facesFromWireframe(cv, full, state.wireframe);
+    const faces = state.lastFaceDetections.some((face) => Array.isArray(face.corners))
+      ? state.lastFaceDetections.map((face) => ({
+          ...face,
+          face: RubikDetector.readFaceQuad(cv, full, face.corners),
+          stickerCount: 9,
+          method: face.method || "manual-quad",
+        }))
+      : RubikDetector.facesFromWireframe(cv, full, state.wireframe);
     full.delete();
     state.lastFaces = faces.map((f) => f.face);
     state.lastFace = state.lastFaces[0];
@@ -693,7 +719,7 @@
     enableActions();
   }
   overlay.addEventListener("mousedown", (e) => {
-    if (state.pickMode || !state.wireframe) return;
+    if (state.pickMode || !wfHandles().length) return;
     const { x, y, ds } = fullPt(e);
     const thresh = 14 / ds; // ~14 display px
     let bestId = null, bestD = thresh;
@@ -701,7 +727,7 @@
     if (bestId !== null) { state.dragIdx = bestId; e.preventDefault(); }
   });
   overlay.addEventListener("mousemove", (e) => {
-    if (state.dragIdx === null || !state.wireframe) return;
+    if (state.dragIdx === null) return;
     const { x, y, ds } = fullPt(e);
     setHandle(state.dragIdx, { x, y });
     redrawWireframe(ds);
@@ -935,7 +961,7 @@
       </svg>
       <div class="body">
         <b>${label}</b>
-        <p>via <code>${method}</code>${state.wireframe ? " · drag the dots to refine" : ""}</p>
+        <p>via <code>${method}</code>${wfHandles().length ? " · drag the dots to refine" : ""}</p>
       </div>`;
     resultsMetaEl.textContent = label;
   }
