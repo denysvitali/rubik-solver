@@ -52,6 +52,7 @@
     lastFaceDetections: [], // detected face records with corners/method for annotation export
     pickMode: false,    // manual corner-picking active
     pickPts: [],        // clicked corners in full-resolution coords
+    pickFaces: [],      // manually picked face records during multi-face picking
     wireframe: null,    // editable cube wireframe {near, ring[6], sideStart} (full-res)
     dragIdx: null,      // which handle is being dragged: "near" | 0..5
     ortSession: null,
@@ -164,6 +165,7 @@
     state.lastFaceDetections = [];
     state.wireframe = null;
     state.dragIdx = null;
+    state.pickFaces = [];
     facesEl.innerHTML = `
       <div class="empty-state">
         <svg class="empty-illus" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -204,6 +206,7 @@
         state.lastFace = null;
         state.lastFaces = [];
         state.lastFaceDetections = [];
+        state.pickFaces = [];
         canvasWrap.classList.remove("loading");
         // Reset results panel for the new image
         facesEl.innerHTML = `
@@ -413,17 +416,23 @@
   // ---- Manual corner picking (for angled / multi-face photos) ----
   pickBtn.addEventListener("click", () => {
     if (!state.cvReady || !state.srcImg) return;
-    if (state.pickMode) { cancelPick(); return; }
+    if (state.pickMode) {
+      if (state.pickFaces.length) finishManualFaces();
+      else cancelPick();
+      return;
+    }
     state.pickMode = true;
     state.pickPts = [];
+    state.pickFaces = [];
     pickBtn.textContent = "Cancel";
-    setStatus("busy", "Click corner 1 of 4 (in order around the face)");
+    setStatus("busy", "Face 1: click corner 1 of 4");
     drawBase();
   });
 
   function cancelPick() {
     state.pickMode = false;
     state.pickPts = [];
+    state.pickFaces = [];
     if (pickBtn) pickBtn.textContent = "Pick corners";
   }
 
@@ -436,14 +445,15 @@
     state.pickPts.push({ x: cx / ds, y: cy / ds });
     drawPickProgress(ds);
     if (state.pickPts.length < 4) {
-      setStatus("busy", `Click corner ${state.pickPts.length + 1} of 4`);
+      setStatus("busy", `Face ${state.pickFaces.length + 1}: click corner ${state.pickPts.length + 1} of 4`);
     } else {
-      finishPick();
+      addPickedFace();
     }
   });
 
   function drawPickProgress(ds) {
-    drawBase();
+    if (state.pickFaces.length) drawMultiOverlay(state.pickFaces, ds);
+    else drawBase();
     const ctx = overlay.getContext("2d");
     ctx.fillStyle = "#ff3df0";
     ctx.strokeStyle = "rgba(255,61,240,0.9)";
@@ -461,30 +471,60 @@
     }
   }
 
-  function finishPick() {
+  function addPickedFace() {
     const corners = state.pickPts.slice(); // snapshot before cancelPick() clears it
-    cancelPick();
     setStatus("busy", '<span class="spinner"></span> Warping & reading face…');
     setTimeout(() => {
       try {
         const full = fullResMat();
         const face = RubikDetector.sampleQuad(cv, full, corners);
         full.delete();
+        const picked = { face, corners: face.corners || corners, stickerCount: 9, method: "manual-quad" };
+        state.pickFaces.push(picked);
         state.lastFace = face;
+        state.lastFaces = state.pickFaces.map((item) => item.face);
+        state.lastFaceDetections = state.pickFaces.slice();
         const ds = overlay.width / state.srcImg.naturalWidth;
-        drawQuadOverlay(face, ds);
-        renderFaces(face);
+        drawMultiOverlay(state.pickFaces, ds);
+        drawHandles(ds);
+        renderMultiFaces(state.pickFaces);
         renderLegend();
-        renderSummary([{ face, method: "manual corners", stickerCount: 9 }], "manual corners");
+        renderSummary(state.pickFaces, "manual corners");
         diag.textContent =
           `source: ${state.srcImg.naturalWidth}x${state.srcImg.naturalHeight}` +
-          `\nmethod: manual corners (perspective warp)`;
-        setStatus("ready", "Detection complete (manual)");
+          `\nmethod: manual corners (perspective warp)` +
+          `\nfaces picked: ${state.pickFaces.length}`;
+        state.pickPts = [];
+        enableActions();
+        if (state.pickFaces.length >= 3) {
+          finishManualFaces();
+        } else {
+          pickBtn.textContent = "Finish";
+          setStatus("busy", `Face ${state.pickFaces.length + 1}: click corner 1 of 4`);
+        }
       } catch (err) {
         console.error(err);
         setStatus("err", "Manual detect error: " + err.message);
       }
     }, 30);
+  }
+
+  function finishManualFaces() {
+    state.pickMode = false;
+    state.pickPts = [];
+    pickBtn.textContent = "Pick corners";
+    state.lastFaces = state.pickFaces.map((item) => item.face);
+    state.lastFace = state.lastFaces[0] || null;
+    state.lastFaceDetections = state.pickFaces.slice();
+    const ds = overlay.width / state.srcImg.naturalWidth;
+    drawMultiOverlay(state.lastFaceDetections, ds);
+    drawHandles(ds);
+    renderMultiFaces(state.lastFaceDetections);
+    renderLegend();
+    renderSummary(state.lastFaceDetections, "manual corners");
+    resultsMetaEl.textContent = `${state.lastFaceDetections.length} manual face${state.lastFaceDetections.length === 1 ? "" : "s"}`;
+    setStatus("ready", "Detection complete (manual)");
+    enableActions();
   }
 
   function drawQuadOverlay(face, ds) {
