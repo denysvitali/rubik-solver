@@ -2,6 +2,7 @@
   if (typeof module !== "undefined" && module.exports) {
     module.exports = factory({
       stickerFaces: require("./steps/stickerFaces.js"),
+      learnedFaceQuads: require("./steps/learnedFaceQuads.js"),
       singleFaceFallback: require("./steps/singleFaceFallback.js"),
       learnedFaceLocalization: require("./steps/learnedFaceLocalization.js"),
       geometricSilhouette: require("./steps/geometricSilhouette.js"),
@@ -13,6 +14,7 @@
 })(typeof self !== "undefined" ? self : globalThis, function (steps) {
   const PIPELINE_STEPS = [
     steps.stickerFaces,
+    steps.learnedFaceQuads,
     steps.geometricSilhouette,
     steps.singleFaceFallback,
     steps.learnedFaceLocalization,
@@ -27,6 +29,7 @@
       cv,
       src,
       detector: opts.detector,
+      locateFaces: opts.locateFaces,
       segmentCube: opts.segmentCube,
       singleResult: null,
       artifacts,

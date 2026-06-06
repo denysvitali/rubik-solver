@@ -24,6 +24,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 BUSTED = (
     "detector.js",
     "pipeline/steps/stickerFaces.js",
+    "pipeline/steps/learnedFaceQuads.js",
     "pipeline/steps/singleFaceFallback.js",
     "pipeline/steps/learnedFaceLocalization.js",
     "pipeline/steps/geometricSilhouette.js",

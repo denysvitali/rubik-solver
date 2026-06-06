@@ -23,6 +23,7 @@
   const drop = $("drop");
   const detectBtn = $("detectBtn");
   const pickBtn = $("pickBtn");
+  const exportAnnoBtn = $("exportAnnoBtn");
   const newImageBtn = $("newImageBtn");
   const facesEl = $("faces");
   const legendEl = $("legend");
@@ -48,6 +49,7 @@
     srcFile: null,      // File (if user picked one, for size display)
     lastFace: null,     // last detected face (for copy-to-clipboard)
     lastFaces: [],      // all detected faces (multi-face)
+    lastFaceDetections: [], // detected face records with corners/method for annotation export
     pickMode: false,    // manual corner-picking active
     pickPts: [],        // clicked corners in full-resolution coords
     wireframe: null,    // editable cube wireframe {near, ring[6], sideStart} (full-res)
@@ -92,6 +94,7 @@
       setTimeout(() => ($("copyLogBtn").textContent = "Copy"), 1500);
     }
   });
+  exportAnnoBtn?.addEventListener("click", copyAnnotation);
 
   const COLORS = RubikDetector.COLORS;
 
@@ -110,6 +113,7 @@
     const on = state.cvReady && state.srcImg;
     detectBtn.disabled = !on;
     pickBtn.disabled = !on;
+    if (exportAnnoBtn) exportAnnoBtn.disabled = !on || state.lastFaceDetections.length === 0;
   };
 
   // ---- OpenCV load handling ----
@@ -157,6 +161,7 @@
     state.srcFile = null;
     state.lastFace = null;
     state.lastFaces = [];
+    state.lastFaceDetections = [];
     state.wireframe = null;
     state.dragIdx = null;
     facesEl.innerHTML = `
@@ -196,6 +201,9 @@
         state.srcImg = img;
         cancelPick();
         state.wireframe = null; state.dragIdx = null;
+        state.lastFace = null;
+        state.lastFaces = [];
+        state.lastFaceDetections = [];
         canvasWrap.classList.remove("loading");
         // Reset results panel for the new image
         facesEl.innerHTML = `
@@ -530,6 +538,7 @@
     showProgress(30, "Running detection pipeline…");
     const pipelineResult = await RubikPipeline.runPipeline(cv, full, {
       detector: RubikDetector,
+      locateFaces: null,
       segmentCube: async (mat) => {
         showProgress(60, "Segmenting cube (neural model)…");
         setStatus("busy", '<span class="spinner"></span> Segmenting cube (model)…');
@@ -545,6 +554,7 @@
       full.delete();
       state.lastFaces = faces.map((f) => f.face);
       state.lastFace = state.lastFaces[0];
+      state.lastFaceDetections = faces;
       state.wireframe = (geometric && faces[0] && faces[0].wireframe) ? faces[0].wireframe : null;
       state.dragIdx = null;
       drawMultiOverlay(faces, ds);
@@ -553,6 +563,7 @@
       renderLegend();
       const method = pipelineResult.method;
       renderSummary(faces, method);
+      enableActions();
       diag.textContent =
         `source: ${state.srcImg.naturalWidth}x${state.srcImg.naturalHeight}` +
         `\nmethod: ${method}` +
@@ -570,6 +581,12 @@
     full.delete();
     state.lastFace = result.face;
     state.lastFaces = [result.face];
+    state.lastFaceDetections = [{
+      face: result.face,
+      corners: result.corners || null,
+      stickerCount: result.stickerCount,
+      method: result.method,
+    }];
     showProgress(95, "Rendering result…");
 
     if (result.method === "grid" && result.corners) {
@@ -580,6 +597,7 @@
     renderFaces(result.face);
     renderLegend();
     renderSummary([{ face: result.face, method: result.method, stickerCount: result.stickerCount }], result.method);
+    enableActions();
 
     const regionInfo = result.region
       ? `\nface region: ${Math.round(result.region.w)}x${Math.round(result.region.h)} @(${Math.round(result.region.x)},${Math.round(result.region.y)})`
@@ -667,10 +685,12 @@
     full.delete();
     state.lastFaces = faces.map((f) => f.face);
     state.lastFace = state.lastFaces[0];
+    state.lastFaceDetections = faces;
     const ds = overlay.width / state.srcImg.naturalWidth;
     drawMultiOverlay(faces, ds);
     drawHandles(ds);
     renderMultiFaces(faces);
+    enableActions();
   }
   overlay.addEventListener("mousedown", (e) => {
     if (state.pickMode || !state.wireframe) return;
@@ -752,6 +772,56 @@
       out += face.cells.slice(i, i + 3).map((c) => c.code).join(" ") + "\n";
     }
     return out.trimEnd();
+  }
+
+  function faceGrid(face) {
+    return face.cells.map((cell) => cell.code).join("");
+  }
+
+  function annotationForCurrentImage() {
+    if (!state.srcImg || !state.lastFaceDetections.length) return null;
+    return {
+      image: {
+        width: state.srcImg.naturalWidth,
+        height: state.srcImg.naturalHeight,
+        name: state.srcFile ? state.srcFile.name : null,
+        size: state.srcFile ? state.srcFile.size : null,
+      },
+      wireframe: state.wireframe || null,
+      faces: state.lastFaceDetections.map((item, index) => ({
+        index,
+        method: item.method || null,
+        stickerCount: item.stickerCount || null,
+        corners: item.corners || null,
+        grid: faceGrid(item.face),
+        rows: [
+          faceGrid(item.face).slice(0, 3),
+          faceGrid(item.face).slice(3, 6),
+          faceGrid(item.face).slice(6, 9),
+        ],
+        cells: item.face.cells.map((cell) => ({
+          code: cell.code,
+          rgb: cell.rgb,
+          cx: cell.cx,
+          cy: cell.cy,
+        })),
+      })),
+    };
+  }
+
+  function copyAnnotation() {
+    const annotation = annotationForCurrentImage();
+    if (!annotation || !exportAnnoBtn) return;
+    const text = JSON.stringify(annotation, null, 2);
+    const done = () => {
+      exportAnnoBtn.textContent = "Copied ✓";
+      setTimeout(() => (exportAnnoBtn.textContent = "Export annotation"), 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done));
+    } else {
+      fallbackCopy(text, done);
+    }
   }
 
   // Decide whether a cell's text label should be light or dark for contrast.

@@ -560,6 +560,7 @@
       <div class="canvas-toolbar">
         <button class="btn" id="detectBtn" disabled>Detect cube</button>
         <button class="btn secondary" id="pickBtn" disabled title="Click the 4 corners of one cube face">Pick corners</button>
+        <button class="btn secondary" id="exportAnnoBtn" disabled title="Copy face quad annotations as JSON">Export annotation</button>
         <button class="btn secondary" id="newImageBtn" title="Load a different image">New image</button>
         <div class="canvas-meta">
           <span class="badge" id="imgDims">—</span>
@@ -691,6 +692,7 @@
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
 <script src="detector.js"></script>
 <script src="pipeline/steps/stickerFaces.js"></script>
+<script src="pipeline/steps/learnedFaceQuads.js"></script>
 <script src="pipeline/steps/singleFaceFallback.js"></script>
 <script src="pipeline/steps/learnedFaceLocalization.js"></script>
 <script src="pipeline/steps/geometricSilhouette.js"></script>

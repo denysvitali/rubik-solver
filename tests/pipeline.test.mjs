@@ -98,12 +98,39 @@ if (cv) {
       Pipeline.PIPELINE_STEPS.map((s) => s.id),
       [
         "sticker-faces",
+        "learned-face-quads",
         "geometric-silhouette",
         "single-face-fallback",
         "learned-face-localization",
         "low-confidence-single-face",
       ],
     );
+  });
+
+  test("pipeline: learned face quads short-circuit geometric fallback", async () => {
+    let geometricCalled = false;
+    const detector = {
+      detectFaces: () => [],
+      detectFacesGeometric: () => { geometricCalled = true; return []; },
+      detectCube: () => { throw new Error("single fallback should not run"); },
+      readFaceQuad: (_cv, _src, corners) => ({
+        cells: "RRWWGBYBG".split("").map((code) => ({ code, rgb: [0, 0, 0], cx: 0, cy: 0 })),
+        detected: true,
+        corners,
+      }),
+    };
+    const corners = [{ x: 1, y: 2 }, { x: 3, y: 4 }, { x: 5, y: 6 }, { x: 7, y: 8 }];
+    const result = await Pipeline.runPipeline({}, {}, {
+      detector,
+      locateFaces: async () => [{ corners, confidence: 0.99 }],
+    });
+
+    assert.equal(result.kind, "multi");
+    assert.equal(result.method, "learned face quads");
+    assert.equal(result.faces.length, 1);
+    assert.deepEqual(result.faces[0].corners, corners);
+    assert.equal(result.faces[0].face.cells.map((cell) => cell.code).join(""), "RRWWGBYBG");
+    assert.equal(geometricCalled, false);
   });
 
   for (const c of CASES) {
