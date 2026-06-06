@@ -12,11 +12,13 @@
 // chromium) node --test tests/harness.test.mjs'` (per the user memory).
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import puppeteer from "puppeteer";
 
-const URL = process.env.URL || "http://localhost:8085/";
+const APP_URL = process.env.URL || "http://localhost:8085/";
 const IMG = process.env.IMG || "sample.jpg";
 const FLAT_STICKER_GROUND_TRUTH = "GRYGBOGYB";
+const HAS_LOCAL_FLAT_SAMPLE = fs.existsSync(new URL("../sample.jpg", import.meta.url));
 
 const browser = await puppeteer.launch({
   headless: "new",
@@ -30,7 +32,7 @@ const errors = [];
 page.on("pageerror", (e) => errors.push(`[pageerror] ${e.message}`));
 page.on("console", (m) => { if (m.type() === "error") errors.push(`[console.error] ${m.text()}`); });
 
-await page.goto(URL, { waitUntil: "networkidle2", timeout: 60000 });
+await page.goto(APP_URL, { waitUntil: "networkidle2", timeout: 60000 });
 
 // If the opencv.js CDN is unreachable (sandbox, offline), the page never
 // reports ready. Skip the test gracefully rather than fail — CI runners
@@ -106,7 +108,7 @@ test("harness: pipeline diagnostics are rendered", () => {
   assert.ok(result.debugSteps.some((step) => /accepted/i.test(step)), `no accepted pipeline step: ${result.debugSteps.join(" | ")}`);
 });
 
-test("harness: flat sticker cube matches pinned one-face ground truth", { skip: IMG !== "sample.jpg" }, () => {
+test("harness: flat sticker cube matches pinned one-face ground truth", { skip: IMG !== "sample.jpg" || !HAS_LOCAL_FLAT_SAMPLE }, () => {
   assert.equal(result.cards.length, 1, `expected one visible side; got ${result.cards.length}`);
   const cells = result.cards[0].cells.map((c) => c.code).join("");
   assert.equal(cells, FLAT_STICKER_GROUND_TRUTH);

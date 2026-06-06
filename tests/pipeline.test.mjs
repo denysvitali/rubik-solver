@@ -97,7 +97,8 @@ if (cv) {
   });
 
   for (const c of CASES) {
-    test(`pipeline: ${c.name}`, async () => {
+    const cacheFile = new URL("./" + c.cache, import.meta.url);
+    test(`pipeline: ${c.name}`, { skip: !c.url && !fs.existsSync(cacheFile) }, async () => {
       const img = await loadImage(c);
       const src = cv.matFromImageData({ data: img.data, width: img.width, height: img.height });
       let result;
