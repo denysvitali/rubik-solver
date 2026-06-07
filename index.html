@@ -268,7 +268,56 @@
     overflow: hidden;
     text-align: center;
   }
-  #canvasWrap canvas { max-width: 100%; max-height: 500px; display: inline-block; margin: 10px 0; }
+  #canvasWrap canvas { max-width: 100%; max-height: 500px; display: inline-block; margin: 10px 0; touch-action: none; }
+  .nudge-pad {
+    margin: 0 16px 16px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--surface-2);
+    overflow: hidden;
+  }
+  .nudge-pad[hidden] { display: none; }
+  .nudge-arrows {
+    float: left;
+    width: 116px;
+    display: grid;
+    grid-template-columns: repeat(3, 36px);
+    grid-template-rows: repeat(3, 36px);
+    gap: 4px;
+  }
+  .nudge-arrows button, .nudge-steps button {
+    min-width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface);
+    color: var(--ink);
+    font-weight: 700;
+    font-size: 15px;
+  }
+  .nudge-arrows button[data-nudge="up"] { grid-column: 2; grid-row: 1; }
+  .nudge-arrows button[data-nudge="left"] { grid-column: 1; grid-row: 2; }
+  .nudge-arrows button[data-nudge="right"] { grid-column: 3; grid-row: 2; }
+  .nudge-arrows button[data-nudge="down"] { grid-column: 2; grid-row: 3; }
+  .nudge-steps {
+    margin-left: 132px;
+    min-height: 116px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .nudge-steps button.active {
+    background: var(--ink);
+    color: #fff;
+    border-color: var(--ink);
+  }
+  .nudge-hint {
+    width: 100%;
+    color: var(--muted);
+    font-size: 12px;
+  }
 
   /* ===== Buttons ===== */
   .btn {
@@ -570,6 +619,20 @@
 
       <div id="canvasWrap">
         <canvas id="overlay"></canvas>
+      </div>
+      <div class="nudge-pad" id="nudgePad" hidden>
+        <div class="nudge-arrows">
+          <button type="button" data-nudge="up" title="Move selected corner up">↑</button>
+          <button type="button" data-nudge="left" title="Move selected corner left">←</button>
+          <button type="button" data-nudge="right" title="Move selected corner right">→</button>
+          <button type="button" data-nudge="down" title="Move selected corner down">↓</button>
+        </div>
+        <div class="nudge-steps">
+          <button type="button" data-step="1" class="active">1px</button>
+          <button type="button" data-step="5">5px</button>
+          <button type="button" data-step="10">10px</button>
+          <div class="nudge-hint">Tap a corner, then nudge it precisely.</div>
+        </div>
       </div>
 
       <div class="progress-wrap" id="progressWrap">

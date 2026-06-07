@@ -33,6 +33,7 @@
   const progressLabel = $("progressLabel");
   const progressPct = $("progressPct");
   const canvasWrap = $("canvasWrap");
+  const nudgePad = $("nudgePad");
   const appLogEl = $("appLog");
   const logLines = [];
   const dropCard = $("dropCard");
@@ -56,6 +57,7 @@
     wireframe: null,    // editable cube wireframe {near, ring[6], sideStart} (full-res)
     dragIdx: null,      // which handle is being dragged: "near" | 0..5
     selectedHandle: null, // last clicked corner handle for keyboard nudging
+    nudgeStep: 1,
     ortSession: null,
     ortLoading: null,
     modelStatus: "idle",
@@ -97,6 +99,23 @@
     }
   });
   exportAnnoBtn?.addEventListener("click", copyAnnotation);
+  nudgePad?.addEventListener("click", (e) => {
+    const btn = e.target && e.target.closest("button");
+    if (!btn) return;
+    if (btn.dataset.step) {
+      state.nudgeStep = Number(btn.dataset.step) || 1;
+      updateNudgePad();
+      return;
+    }
+    const moves = {
+      up: [0, -state.nudgeStep],
+      down: [0, state.nudgeStep],
+      left: [-state.nudgeStep, 0],
+      right: [state.nudgeStep, 0],
+    };
+    const move = moves[btn.dataset.nudge];
+    if (move) nudgeSelectedHandle(move[0], move[1]);
+  });
 
   const COLORS = RubikDetector.COLORS;
 
@@ -168,6 +187,7 @@
     state.dragIdx = null;
     state.selectedHandle = null;
     state.pickFaces = [];
+    updateNudgePad();
     facesEl.innerHTML = `
       <div class="empty-state">
         <svg class="empty-illus" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -210,6 +230,7 @@
         state.lastFaces = [];
         state.lastFaceDetections = [];
         state.pickFaces = [];
+        updateNudgePad();
         canvasWrap.classList.remove("loading");
         // Reset results panel for the new image
         facesEl.innerHTML = `
@@ -580,6 +601,7 @@
     cancelPick();
     state.wireframe = null; state.dragIdx = null;
     state.selectedHandle = null;
+    updateNudgePad();
     const full = fullResMat();
     const ds = overlay.width / state.srcImg.naturalWidth;
 
@@ -608,6 +630,7 @@
       state.lastFaceDetections = faces;
       state.wireframe = (geometric && faces[0] && faces[0].wireframe) ? faces[0].wireframe : null;
       state.dragIdx = null;
+      updateNudgePad();
       drawMultiOverlay(faces, ds);
       if (state.wireframe) drawHandles(ds);
       renderMultiFaces(faces);
@@ -638,6 +661,7 @@
       stickerCount: result.stickerCount,
       method: result.method,
     }];
+    updateNudgePad();
     showProgress(95, "Rendering result…");
 
     if (result.method === "grid" && result.corners) {
@@ -768,6 +792,13 @@
     setHandle(state.selectedHandle, { x: p.x + dx, y: p.y + dy });
     try { resampleWireframe(); } catch (err) { console.error(err); }
   }
+  function updateNudgePad() {
+    if (!nudgePad) return;
+    nudgePad.hidden = !state.selectedHandle;
+    for (const btn of nudgePad.querySelectorAll("[data-step]")) {
+      btn.classList.toggle("active", Number(btn.dataset.step) === state.nudgeStep);
+    }
+  }
   // live redraw during drag (geometry only, no re-sampling)
   function redrawWireframe(ds) {
     const faces = state.lastFaceDetections.some((face) => Array.isArray(face.corners))
@@ -802,7 +833,7 @@
     const thresh = 14 / ds; // ~14 display px
     let bestId = null, bestD = thresh;
     for (const h of wfHandles()) { const d = Math.hypot(h.p.x - x, h.p.y - y); if (d < bestD) { bestD = d; bestId = h.id; } }
-    if (bestId !== null) { state.dragIdx = bestId; state.selectedHandle = bestId; e.preventDefault(); }
+    if (bestId !== null) { state.dragIdx = bestId; state.selectedHandle = bestId; updateNudgePad(); e.preventDefault(); }
   });
   overlay.addEventListener("mousemove", (e) => {
     if (state.dragIdx === null) return;
@@ -811,6 +842,37 @@
     redrawWireframe(ds);
   });
   window.addEventListener("mouseup", () => {
+    if (state.dragIdx === null) return;
+    state.dragIdx = null;
+    try { resampleWireframe(); } catch (err) { console.error(err); }
+  });
+  overlay.addEventListener("touchstart", (e) => {
+    if (state.pickMode || !wfHandles().length || !e.touches.length) return;
+    const t = e.touches[0], rect = overlay.getBoundingClientRect();
+    const cx = (t.clientX - rect.left) * (overlay.width / rect.width);
+    const cy = (t.clientY - rect.top) * (overlay.height / rect.height);
+    const ds = overlay.width / state.srcImg.naturalWidth;
+    const x = cx / ds, y = cy / ds, thresh = 18 / ds;
+    let bestId = null, bestD = thresh;
+    for (const h of wfHandles()) { const d = Math.hypot(h.p.x - x, h.p.y - y); if (d < bestD) { bestD = d; bestId = h.id; } }
+    if (bestId !== null) {
+      state.dragIdx = bestId;
+      state.selectedHandle = bestId;
+      updateNudgePad();
+      e.preventDefault();
+    }
+  }, { passive: false });
+  overlay.addEventListener("touchmove", (e) => {
+    if (state.dragIdx === null || !e.touches.length) return;
+    const t = e.touches[0], rect = overlay.getBoundingClientRect();
+    const cx = (t.clientX - rect.left) * (overlay.width / rect.width);
+    const cy = (t.clientY - rect.top) * (overlay.height / rect.height);
+    const ds = overlay.width / state.srcImg.naturalWidth;
+    setHandle(state.dragIdx, { x: cx / ds, y: cy / ds });
+    redrawWireframe(ds);
+    e.preventDefault();
+  }, { passive: false });
+  window.addEventListener("touchend", () => {
     if (state.dragIdx === null) return;
     state.dragIdx = null;
     try { resampleWireframe(); } catch (err) { console.error(err); }
