@@ -55,6 +55,7 @@
     pickFaces: [],      // manually picked face records during multi-face picking
     wireframe: null,    // editable cube wireframe {near, ring[6], sideStart} (full-res)
     dragIdx: null,      // which handle is being dragged: "near" | 0..5
+    selectedHandle: null, // last clicked corner handle for keyboard nudging
     ortSession: null,
     ortLoading: null,
     modelStatus: "idle",
@@ -165,6 +166,7 @@
     state.lastFaceDetections = [];
     state.wireframe = null;
     state.dragIdx = null;
+    state.selectedHandle = null;
     state.pickFaces = [];
     facesEl.innerHTML = `
       <div class="empty-state">
@@ -203,6 +205,7 @@
         state.srcImg = img;
         cancelPick();
         state.wireframe = null; state.dragIdx = null;
+        state.selectedHandle = null;
         state.lastFace = null;
         state.lastFaces = [];
         state.lastFaceDetections = [];
@@ -356,6 +359,13 @@
     if (k === "d" && !detectBtn.disabled) { e.preventDefault(); detectBtn.click(); }
     else if (k === "p" && !pickBtn.disabled) { e.preventDefault(); pickBtn.click(); }
     else if (k === "n") { e.preventDefault(); newImageBtn?.click(); }
+    else if (k.startsWith("arrow") && state.selectedHandle) {
+      e.preventDefault();
+      const step = e.shiftKey ? 10 : 1;
+      const dx = k === "arrowleft" ? -step : k === "arrowright" ? step : 0;
+      const dy = k === "arrowup" ? -step : k === "arrowdown" ? step : 0;
+      nudgeSelectedHandle(dx, dy);
+    }
   });
 
   detectBtn.addEventListener("click", () => {
@@ -569,6 +579,7 @@
   async function runDetection() {
     cancelPick();
     state.wireframe = null; state.dragIdx = null;
+    state.selectedHandle = null;
     const full = fullResMat();
     const ds = overlay.width / state.srcImg.naturalWidth;
 
@@ -712,7 +723,15 @@
       const x = h.p.x * ds, y = h.p.y * ds;
       ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2);
       ctx.fillStyle = h.color || (h.id === "near" ? "#ff3b3b" : "#ffffff");
-      ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = "#000"; ctx.stroke();
+      ctx.fill();
+      ctx.lineWidth = sameHandle(h.id, state.selectedHandle) ? 4 : 2;
+      ctx.strokeStyle = sameHandle(h.id, state.selectedHandle) ? "#fff" : "#000";
+      ctx.stroke();
+      if (sameHandle(h.id, state.selectedHandle)) {
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = "#000";
+        ctx.stroke();
+      }
     }
   }
   function fullPt(e) {
@@ -729,6 +748,25 @@
     }
     if (id === "near") state.wireframe.near = p;
     else state.wireframe.ring[id] = p;
+  }
+  function sameHandle(a, b) {
+    if (a === b) return true;
+    if (!a || !b || typeof a !== "object" || typeof b !== "object") return false;
+    return a.faceIndex === b.faceIndex && a.cornerIndex === b.cornerIndex;
+  }
+  function getHandlePoint(id) {
+    if (id && typeof id === "object") {
+      const face = state.lastFaceDetections[id.faceIndex];
+      return face && face.corners && face.corners[id.cornerIndex];
+    }
+    if (!state.wireframe) return null;
+    return id === "near" ? state.wireframe.near : state.wireframe.ring[id];
+  }
+  function nudgeSelectedHandle(dx, dy) {
+    const p = getHandlePoint(state.selectedHandle);
+    if (!p) return;
+    setHandle(state.selectedHandle, { x: p.x + dx, y: p.y + dy });
+    try { resampleWireframe(); } catch (err) { console.error(err); }
   }
   // live redraw during drag (geometry only, no re-sampling)
   function redrawWireframe(ds) {
@@ -764,7 +802,7 @@
     const thresh = 14 / ds; // ~14 display px
     let bestId = null, bestD = thresh;
     for (const h of wfHandles()) { const d = Math.hypot(h.p.x - x, h.p.y - y); if (d < bestD) { bestD = d; bestId = h.id; } }
-    if (bestId !== null) { state.dragIdx = bestId; e.preventDefault(); }
+    if (bestId !== null) { state.dragIdx = bestId; state.selectedHandle = bestId; e.preventDefault(); }
   });
   overlay.addEventListener("mousemove", (e) => {
     if (state.dragIdx === null) return;
